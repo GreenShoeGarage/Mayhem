@@ -1,130 +1,78 @@
-# Test plan
+# Test plan — MAYHEM RTL v0.8.2
 
-## Release-gate automation
+## Release gates
 
-Every user-facing build must run:
+Every release must run:
 
 ```bash
 npm run build
 npm test
 ```
 
-The release gate covers JavaScript/browser modules, portable C DSP,
-receive-only C++ `RadioDevice` contracts, v0.7 Mayhem UI/registry native C++
-tests, and the built-distribution no-network audit.
+The build must fail on active-version inconsistency, unresolved version tokens, JavaScript syntax failures, WebAssembly compile failures, registry-generation failures or mismatched package/configuration/CMake versions.
 
-## v0.7 runtime-convergence tests
+## Version consistency
 
-### Upstream-shaped UI primitives
+Verify one active semantic version across package metadata, JavaScript configuration, CMake, visible header, About dialog, HTML runtime marker, version-addressed entry JavaScript/CSS, generated `version.json`, service-worker URL and service-worker cache.
 
-Native C++ tests must verify:
+Simulate/source-audit an HTML-versus-JavaScript mismatch and verify stale-cache cleanup preserves the executing `APP_VERSION`, not the stale HTML version. A persistent mismatch must stop startup visibly.
 
-- `ui::KeyEvent` ordinals remain Right=0, Left=1, Down=2, Up=3, Select=4,
-  Dfu=5, Back=6;
-- logical character metrics remain 8 × 16;
-- RGB565 `Color` packing matches expected values;
-- rectangle containment and intersection semantics remain stable.
+## Amateur Radio automated tests
 
-### Native application registration
+- common HF/VHF/UHF band presets exist;
+- conventional defaults choose LSB/USB/CW/NFM as intended without claiming regulatory authority;
+- normal R8xx profiles select Q-branch direct sampling below their tuner floor;
+- zero-minimum profiles do not request unnecessary direct sampling;
+- USB and LSB recover the selected sideband tone;
+- the opposite sideband is strongly rejected in the deterministic fixture;
+- RIT corrects a known carrier offset without changing nominal tune;
+- CW generates the selected beat pitch from a tuned carrier;
+- USB/LSB/CW/Amateur Radio are receive-only registry entries;
+- project schema validates new amateur/SSB/CW state.
 
-The build must generate one C++ translation unit per `src/app_registry.json`
-entry. Each source must contain a file-scope `app::Registrar`.
+## Amateur Radio physical review
 
-Native and WebAssembly tests must verify:
+- receive a known USB amateur signal;
+- receive a known LSB amateur signal;
+- tune speech accurately using 10/50/100 Hz steps and RIT;
+- compare 1.8/2.1/2.4/2.7/3.0 kHz SSB filters;
+- verify AGC choices do not clip or pump unacceptably;
+- receive a known CW carrier/signal and adjust beat pitch;
+- on the reference R8xx-class receiver, verify a suitable HF band engages the expected direct-sampling path;
+- return above the tuner floor and verify normal tuner operation is restored;
+- record antenna/input hardware used because direct-sampling sensitivity is hardware-dependent.
 
-- 16 registered applications;
-- no duplicate IDs;
-- browser and C++ registry order/identity match the one build definition;
-- transmit entries carry `RequiresTx`;
-- category counts are correct;
-- registry hash is non-zero.
+## Audio-output repair review
 
-### Navigation stack
+- tune a strong broadcast FM station in WFM;
+- enable browser audio after a user gesture;
+- confirm prebuffer transitions to active audio;
+- verify rebuffer events do not climb continuously under stable reception;
+- verify mute/unmute, volume, stop/restart and AudioContext resume;
+- inspect Diagnostics frames/samples pushed, queue depth, worklet drops and push errors.
 
-WebAssembly tests must exercise:
+## Broadcast Radio tests
 
-```text
-Home → Receive category → Spectrum application → Back → category → Back → Home
-```
+Automated: FM selects WFM and normal tuner; medium-wave AM selects AM and direct sampling when required; a zero-minimum profile does not unnecessarily enable direct sampling; channel stepping stays in the preset range.
 
-The application selection must produce exactly one consumable browser activation
-event while leaving the C++ application frame on the logical stack until Back is
-pressed.
+Physical: hear a strong FM station; review medium-wave AM with a suitable antenna/front end; verify low-frequency input-path indication and station save.
 
-### Radio-state mirror
+## Scanner tests
 
-WebAssembly must accept and render without error:
+Automated: deterministic sequence, range wrap, threshold hit/merge, hold, lockouts, lockout clearing and bounded history.
 
-- actual center frequency;
-- actual sample rate;
-- receive level;
-- tuner-family code;
-- automatic/manual gain state;
-- actual gain;
-- dropped samples;
-- radio errors;
-- live/simulation/replay source state.
+Physical: scan a known active range, adjust threshold above the noise floor, verify hold/stop/lockout/resume and inspect exported CSV.
 
-### Browser presenter boundary
+## ADS-B tests
 
-Static/module tests must confirm that browser Canvas code presents WebAssembly
-pixels and maps input, but does not maintain a second Mayhem menu/navigation
-implementation.
+Automated: CRC-valid DF17 identification frame, callsign, known even/odd airborne CPR pair, expected position/altitude, 2.4 Msps IQ pulse fixture, explicit Simulation Mode and rejection of invalid parity.
 
-## v0.5 receiver workflow regression
+Physical: configure 1090 MHz/2.4 Msps with an appropriate antenna, observe CRC-valid frames, verify aircraft table/position pairs and export JSON without remote map/network dependencies.
 
-Confirm Easy Mode retains the essential receiver controls in the main workspace:
-frequency, tuning step, modulation, gain, receiver start/stop, audio,
-capture, and station save. Advanced controls must remain suppressed in Easy Mode
-without creating a second receiver state.
+## Regression tests
 
-## v0.6 hardware validation — completed reference gate
+Retain coverage for WFM/NFM/AM fixtures, bounded AudioWorklet, Fast Fourier Transform, receive-only gating, hardware evidence metadata, receiver lifecycle, stale-session rejection, latest-request-wins commands, WebUSB device policy, Mayhem framebuffer/registry/navigation, stream planning, SharedArrayBuffer pool, governor, capture/replay, project migration, offline/service-worker behavior and no outbound runtime traffic.
 
-The user has validated the recorded reference `RTL2838UHIDIR` configuration for:
+## Reference hardware matrix
 
-- 30-minute 1.024 Msps soak with zero visible drops;
-- on-air WFM/NFM/AM audio;
-- AudioContext lifecycle;
-- 60-minute 2.4 Msps target soak;
-- 2.4 Msps receive plus capture;
-- SharedArrayBuffer path;
-- sustained audio without unacceptable recurring underruns;
-- bounded long-run memory/queue behavior.
-
-These results remain reference-configuration evidence rather than a wider
-compatibility claim.
-
-## Stream-planning / shared pool / performance-governor regression
-
-Retain automated tests for:
-
-- low/high automatic plan selection;
-- custom plan bounds;
-- fixed shared-slot ownership;
-- acknowledgement before slot reuse;
-- visualization load shedding before accepted-block audio work;
-- governor degradation and hysteretic recovery.
-
-## Audio receiver regression
-
-Deterministic IQ fixtures remain mandatory for WFM, NFM, and AM even after
-physical validation. Never replace repeatable fixture evidence with only an
-on-air listening claim.
-
-## Regression workflows
-
-Retain tests for:
-
-- cold start;
-- Simulation Mode;
-- connection denial/retry;
-- start/stop;
-- tune while receiving;
-- sample-rate and gain change;
-- capture/replay;
-- project import/export and schema migration;
-- hot unplug/reconnect;
-- PWA update deferral;
-- version consistency;
-- no application-generated outbound traffic;
-- transmit gating.
+Record browser, operating system, receiver product, tuner, antenna/input, rate, frequency, duration, direct-sampling state and observed drops for physical validation. Do not generalize one reference configuration to all RTL-SDR hardware.

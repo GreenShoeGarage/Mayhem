@@ -1,184 +1,127 @@
-# Architecture
+# Architecture — MAYHEM RTL v0.8.2
 
-## Runtime layers — v0.7.0
+## Runtime layers
 
 ```text
 Browser window
 ├── Green Shoe application shell
-│   ├── Easy Mode receiver control deck
-│   ├── Advanced Mode inspector / diagnostics
-│   ├── project state, stations, captures, replay
-│   └── Canvas presenter for the 240 × 320 Mayhem WebAssembly framebuffer
+│   ├── Easy/Advanced Receiver
+│   ├── Broadcast Radio
+│   ├── Amateur Radio (USB / LSB / CW / AM / NFM)
+│   ├── Scanner
+│   ├── ADS-B structured panel + local graticule
+│   ├── projects / stations / capture / replay / diagnostics
+│   └── 240 × 320 Mayhem WebAssembly framebuffer presenter
 │
 ├── WebUSB RTL2832U transport
 │   ├── restricted device picker + descriptor validation
 │   ├── tuner detection and R8xx control
-│   ├── serialized actual-value frequency/rate/gain commands
-│   └── bounded asynchronous USB transfer pump
+│   ├── normal tuner / RTL2832U direct-sampling input selection
+│   ├── serialized actual-value tuning/rate/gain commands
+│   └── bounded asynchronous USB sample pump
 │
-├── Stream planner / Processing Web Worker
-│   ├── rate-aware bounded transport plan
-│   ├── transferable ArrayBuffer OR SharedArrayBuffer fixed-slot input
-│   ├── WebAssembly unsigned-8-bit IQ conversion
-│   ├── WFM / NFM / AM audio demodulation on every accepted block
-│   └── FFT / reduced spectrum publication
+├── Stream planner + bounded sample handoff
+│   ├── rate-based transport profiles
+│   ├── transferable ArrayBuffer path
+│   └── SharedArrayBuffer fixed-slot pool when isolated
 │
-├── Adaptive performance governor
-│   ├── queue pressure / worker time / capture backlog
-│   ├── drop and audio-underrun changes
-│   └── visualization load shedding before radio/audio work
+├── Processing Web Worker
+│   ├── raw unsigned-8-bit In-phase/Quadrature (IQ) ingestion
+│   ├── WebAssembly byte-to-complex conversion
+│   ├── WFM / NFM / AM demodulation
+│   ├── USB / LSB complex sideband filtering + Receiver Incremental Tuning
+│   ├── CW narrow filtering + beat oscillator
+│   ├── audio Automatic Gain Control
+│   ├── ADS-B magnitude/preamble/pulse-position/Mode-S decoder
+│   ├── Fast Fourier Transform / averaging / peak work
+│   └── reduced spectrum / audio / decoder-result publication
 │
 ├── AudioWorklet
 │   ├── fixed-size Float32 ring
+│   ├── bounded prebuffer / rebuffer state
 │   ├── volume / mute
-│   └── underrun reporting
+│   └── queue / drop / rebuffer reporting
 │
-├── Mayhem C++ WebAssembly runtime (v0.7 convergence)
-│   ├── src/mayhem/ui.*            upstream-shaped geometry/Color/KeyEvent
-│   ├── src/mayhem/display.*       browser framebuffer display adapter
-│   ├── src/mayhem/painter.*       text/line/rectangle painter
-│   ├── src/mayhem/app_registry.*  native file-scope Registrar registry
-│   ├── src/mayhem/navigation.*    Home → Category → Application stack
-│   ├── src/mayhem/runtime.*       framebuffer + mirrored radio state
-│   └── src/generated_apps/*.cpp   one C++ Registrar translation unit per app
+├── C++ Mayhem WebAssembly core
+│   ├── UI geometry/color/key primitives
+│   ├── framebuffer display + painter
+│   ├── native app::Registrar registry
+│   ├── Home → Category → Application navigation
+│   └── mirrored receiver/tuner/gain/drop/error state
 │
 ├── Browser storage
-│   ├── Indexed Database project + metadata
-│   ├── Origin Private File System capture streams
+│   ├── Indexed Database
+│   ├── Origin Private File System
 │   └── local import / export
 │
 └── Service worker
     ├── offline static shell
-    ├── versioned cache
+    ├── semantic-version cache namespace
+    ├── network-first version-sensitive assets
     └── deferred update activation
 ```
 
-## v0.7 runtime-convergence boundary
+## Amateur Radio ownership
 
-Version 0.7 removes the previous monolithic `core_mayhem_bridge.cpp` implementation.
-The bridge now exposes only the browser-facing C ABI. Rendering, navigation,
-registry behavior and radio-state presentation are implemented in separate C++
-modules under `src/mayhem/`.
+`radio/amateur-radio.js` owns only band presets, conventional receive defaults, frequency clamping and the decision about whether a desired frequency is reachable through the normal tuner path or requires RTL2832U direct sampling. It does not create a second radio model.
 
-The geometry, RGB565 `Color` packing, 8 × 16 character metrics and `KeyEvent`
-ordinals match the audited `mayhem-b200` UI primitives at the pinned upstream
-commit. The Painter follows the same rule as the host port: applications paint
-through a display abstraction rather than directly into browser JavaScript.
+Actual direct-sampling changes and tuning go through the shared serialized WebUSB radio control path. If a live band change requires a different input path, reception is stopped, the hardware path is changed, the frequency is tuned, and reception is restarted when appropriate.
 
-The exact upstream fixed-font byte table, icon/theme resources and complete
-STL-based widget/focus tree are not yet byte-for-byte compiled into the
-freestanding stock-clang WebAssembly build. `UPSTREAM_RUNTIME_AUDIT.md` records
-that boundary explicitly.
+The band list is a tuning convenience. It is not a regulatory database and has no transmit capability.
 
-## Native application registration
+## SSB/CW processing
 
-`src/app_registry.json` remains the cross-language build definition. During
-`npm run build`, it produces:
+Upper Sideband (USB), Lower Sideband (LSB), and Continuous Wave (CW) processing stays in the signal-processing Web Worker.
 
-- `web/src/apps/generated-registry.js` for browser compatibility metadata; and
-- one C++ source file per app under `src/generated_apps/`.
-
-Each generated C++ translation unit declares a file-scope `app::Registrar`.
-The WebAssembly build exports `__wasm_call_ctors`; the browser invokes it once
-before reading the registry. This means the C++ core is populated through
-static registration semantics rather than a compiled array included by the C
-ABI bridge.
-
-The registry uses fixed storage in the freestanding core instead of
-`std::vector`, but duplicate-ID rejection, category lookup, application identity
-and registration ownership follow the upstream host design.
-
-## Navigation ownership
-
-The C++ core now owns a true push/pop navigation stack:
+For SSB:
 
 ```text
-Home
-  ↓ Select
-Category
-  ↓ Select
-Application frame
+IQ → decimate → optional digital RIT rotation → complex sideband FIR
+   → real audio → optional audio AGC → resample → AudioWorklet
 ```
 
-Back pops Application → Category → Home. Selecting an app also emits one
-consumable activation event so the Green Shoe shell can show the corresponding
-large browser-native panel without pretending that the browser owns the Mayhem
-navigation state.
+USB selects the positive-frequency sideband and LSB selects the negative-frequency sideband. The deterministic fixtures verify recovery of the selected sideband and rejection of the opposite sideband.
 
-## Radio-state mirror
+For CW:
 
-The live WebUSB device remains controlled by the proven browser transport. The
-C++ logical runtime receives the *actual* accepted state for presentation:
+```text
+IQ → decimate → optional RIT → narrow complex low-pass
+   → configurable beat oscillator → audio AGC → resample → AudioWorklet
+```
 
-- center frequency;
-- sample rate;
-- receive level;
-- tuner-family code;
-- automatic/manual gain and actual gain;
-- dropped-sample count;
-- radio error count;
-- live/simulation/replay source state.
+The current implementation uses bounded state across radio blocks. It does not move demodulation into `requestAnimationFrame()`.
 
-This is not yet the final direct app-to-WebUSB `radio::RadioDevice` call path.
-The checked-in `MB200_WEB=ON` Emscripten target now includes the same v0.7
-Mayhem runtime modules and remains the seam for that later complete C++ control
-path.
+## Broadcast Radio ownership
 
-## Stream ownership
+Broadcast Radio is another workflow controller over the same shared receiver. FM selects WFM. Medium-wave AM selects AM and requests direct sampling when the connected profile cannot reach the band through its normal tuner path.
 
-WebUSB sample blocks arrive as `ArrayBuffer` objects containing unsigned 8-bit
-interleaved I/Q values.
+## Scanner ownership
 
-### Transferable path
+`ScannerController` owns scan sequencing, hit history and lockouts. Actual tuning uses the same serialized hardware command queue as manual tuning. A hit is only a threshold crossing.
 
-The compatibility path transfers ownership of the `ArrayBuffer` to the
-processing worker.
+## ADS-B pipeline
 
-### Shared raw-input pool
+At 1090 MHz / 2.4 million samples per second (Msps):
 
-When cross-origin isolation and `SharedArrayBuffer` are available, the main
-thread owns a fixed eight-slot shared pool. Each slot is 131,072 bytes, enough
-for 65,536 complex unsigned-8-bit interleaved samples. A slot cannot be reused
-until the worker acknowledges it.
+```text
+IQ → magnitude → preamble detection → pulse-position bit sampling
+   → 112-bit Mode S frame → Cyclic Redundancy Check gate
+   → supported extended-squitter parser → aircraft tracker / CPR pairing
+   → browser structured result
+```
 
-The DSP WebAssembly module still owns separate non-shared memory, so this is a
-shared raw-input handoff rather than a claim that the full Mayhem runtime uses
-shared WebAssembly memory.
+No decoder processing runs in the visual animation loop, and the local graticule uses no external map service.
 
-## Adaptive load shedding
+## Version ownership
 
-The critical sample loop never runs in `requestAnimationFrame()`. The
-performance governor protects radio/audio work before visualization:
+`package.json` is the packaging semantic-version source. Build guards require the same value in JavaScript configuration and CMake. The build injects the version into the visible HTML header/About surfaces, the HTML runtime marker, version-addressed entry JavaScript/CSS and service-worker cache, then writes the same value to `version.json`.
 
-- normal: spectrum every block;
-- busy: spectrum every second block;
-- critical: spectrum every fourth block.
-
-Audio demodulation runs before the spectrum-stride decision and remains on every
-accepted block.
-
-## State isolation
-
-A monotonically increasing connection-session identifier is attached to
-asynchronous USB work. Results from a closed or superseded session are ignored.
-Device-control commands are serialized with latest-request-wins behavior where
-appropriate.
-
-## Capture ownership
-
-When capture is active, `CaptureStore.append()` makes a capture-owned copy
-before worker handoff. Long captures stream to the Origin Private File System
-when available and Indexed Database otherwise.
+At browser startup, the HTML build version is compared with the executing JavaScript `APP_VERSION` before normal initialization. A mismatch triggers one controlled service-worker/cache update and cache-busted reload. Stale MAYHEM RTL caches are removed while the executing/current version cache is preserved. A persistent mismatch throws rather than allowing a mixed-version UI.
 
 ## Receive-only enforcement
 
-The capability object always reports:
+The capability object always reports receive available, transmit unavailable and full duplex unavailable. Broadcast Radio, Amateur Radio, Scanner and ADS-B contain no transmit path.
 
-```text
-has_rx = true
-has_tx = false
-full_duplex = false
-```
+## Remaining Mayhem convergence boundary
 
-Transmit applications remain visible and locked. No radio-transmit method exists
-in the browser WebUSB transport.
+The C++ runtime owns application identity/registration/navigation semantics, but the exact upstream font/bitmap/theme assets, full Standard Template Library-based widget/focus tree and most native application bodies are still not byte-for-byte linked into the freestanding WebAssembly artifact. `MB200_WEB=ON` remains the complete Emscripten convergence seam.

@@ -3,5 +3,5 @@
 namespace {
 static constexpr char kId[] = "adsbrx";
 static constexpr char kName[] = "ADS-B";
-const app::Registrar registrar{{kId, sizeof(kId)-1, kName, sizeof(kName)-1, app::Category::Receive, app::RequiresRx|app::Pending|app::RequiresMap, 2400000u, 2000000u, 2000000u}};
+const app::Registrar registrar{{kId, sizeof(kId)-1, kName, sizeof(kName)-1, app::Category::Receive, app::Ready|app::RequiresRx|app::RequiresMap, 2400000u, 2000000u, 2000000u}};
 }

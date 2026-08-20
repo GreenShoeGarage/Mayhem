@@ -24,4 +24,4 @@ run(path.join(build, "test_ui_primitives"), []);
 const generatedApps = (await readdir(path.join(root, "src", "generated_apps"))).filter((name) => name.endsWith(".cpp")).sort().map((name) => path.join("src", "generated_apps", name));
 run("clang++", ["-std=c++20", "-Isrc", "tests/cpp/test_mayhem_registry.cpp", "src/mayhem/app_registry.cpp", ...generatedApps, "-o", path.join(build, "test_mayhem_registry")]);
 run(path.join(build, "test_mayhem_registry"), []);
-console.log("C and C++ tests passed, including v0.7 upstream-shaped UI primitives and native Registrar registry.");
+console.log("C and C++ tests passed, including upstream-shaped UI primitives and native Registrar registry.");

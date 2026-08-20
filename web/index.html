@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-app-version="__APP_VERSION__">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -7,9 +7,9 @@
   <meta name="description" content="MAYHEM RTL — browser-native, receive-only RTL-SDR workbench">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob: data:; worker-src 'self' blob:; connect-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>MAYHEM RTL</title>
-  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="manifest" href="./manifest.webmanifest?v=__APP_VERSION__">
   <link rel="icon" href="./assets/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./styles.css?v=__APP_VERSION__">
 </head>
 <body>
   <a class="skip-link" href="#workspace">Skip to instrument workspace</a>
@@ -40,6 +40,10 @@
       <nav id="navButtons" class="nav-list">
         <button class="nav-button active" type="button" data-view="home"><span class="nav-glyph">⌂</span><span>Home</span></button>
         <button class="nav-button" type="button" data-view="receiver"><span class="nav-glyph">⌁</span><span>Receiver</span></button>
+        <button class="nav-button" type="button" data-view="broadcast"><span class="nav-glyph">♫</span><span>Broadcast Radio</span></button>
+        <button class="nav-button" type="button" data-view="amateur"><span class="nav-glyph">⌁</span><span>Amateur Radio</span></button>
+        <button class="nav-button" type="button" data-view="scanner"><span class="nav-glyph">⇥</span><span>Scanner</span></button>
+        <button class="nav-button" type="button" data-view="adsb"><span class="nav-glyph">✈</span><span>ADS-B</span></button>
         <button class="nav-button" type="button" data-view="applications"><span class="nav-glyph">▦</span><span>Applications</span></button>
         <button class="nav-button" type="button" data-view="stations"><span class="nav-glyph">★</span><span>Saved Stations</span></button>
         <button class="nav-button" type="button" data-view="captures"><span class="nav-glyph">●</span><span>Captures</span></button>
@@ -118,6 +122,6 @@
   <input id="projectImportInput" type="file" accept="application/json,.json" hidden>
   <input id="replayFileInput" type="file" accept=".cu8,.iq,.bin,application/octet-stream" hidden>
   <input id="replayMetadataInput" type="file" accept="application/json,.json" hidden>
-  <script type="module" src="./src/app.js"></script>
+  <script type="module" src="./src/app.js?v=__APP_VERSION__"></script>
 </body>
 </html>

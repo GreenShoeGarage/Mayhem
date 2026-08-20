@@ -1,117 +1,43 @@
 # Compatibility
 
-## Capability levels
+Version: **MAYHEM RTL v0.8.2**
 
-### Live receiver
+## Browsers
 
-Requires a secure context and a current Chromium-based browser exposing WebUSB,
-WebAssembly, module Web Workers, Canvas, and browser storage.
+Live radio requires a Chromium-based browser with Web Universal Serial Bus (WebUSB) support and a secure context. Simulation and replay can work without WebUSB when the required WebAssembly, worker and storage capabilities exist.
 
-### Live audio receiver
+Audio requires AudioWorklet and an explicit user gesture. The repaired v0.8.1+ audio-output layer still needs a focused physical re-check on the reference configuration.
 
-Adds AudioWorklet. Audio starts only after an explicit user gesture.
+## Receiver families
 
-WFM, NFM, and AM DSP paths are deterministic-fixture tested and have also been
-user-validated on-air on the recorded `RTL2838UHIDIR` reference configuration.
-That evidence does not imply equivalent results for every receiver, tuner,
-browser, or operating system.
+Target hardware includes RTL2832U receivers with R820T, R820T2, R828D (including the RTL-SDR Blog V4 switching profile), and R860 where compatible with the audited R8xx behavior.
 
-### Shared high-rate handoff
+The reference physical record is `RTL2838UHIDIR`, conservatively reported as the R820T/R820T2/R860 family.
 
-When all of the following are true, MAYHEM RTL v0.7.0 uses the shared raw-sample
-pool automatically:
+## Amateur Radio / HF
 
-- `crossOriginIsolated === true`;
-- `SharedArrayBuffer` is available;
-- the page was served with the supplied Cross-Origin-Opener-Policy and
-  Cross-Origin-Embedder-Policy headers.
+The Amateur Radio workspace supports USB, LSB, CW, AM and NFM in software.
 
-Diagnostics reports `shared-block-pool` when active. If these requirements are
-not met, the application uses transferable `ArrayBuffer` handoff.
+Whether a requested HF frequency can be physically received depends on the connected receiver. For profiles with a normal tuner floor near 28.8 MHz, lower HF presets request the RTL2832U Q-branch direct-sampling path when available. A profile advertising a suitable low-frequency input can remain on its normal path. Other hardware may require an external upconverter.
 
-The reference configuration has now passed the v0.6 shared-path and 2.4 Msps
-validation gate. The shared raw-input path is still not the same as a full
-threaded Emscripten/shared-WebAssembly-memory build.
+USB/LSB/CW are deterministic-fixture tested in v0.8.2; on-air validation remains pending.
 
-## Streaming profiles
+## Broadcast Radio
 
-- **Automatic:** selects conservative, balanced, or high-rate transport settings
-  from configured sample rate.
-- **Compatibility:** fixed conservative transport and lower display ceiling.
-- **High-rate:** larger blocks and deeper bounded queues.
-- **Custom:** operator-controlled bounded values; changes apply on receiver
-  restart.
+FM broadcast uses the normal tuner path around 87.5–108 MHz and WFM. Medium-wave AM uses 530–1710 kHz and may require direct sampling on ordinary R8xx profiles. Common 10 kHz and 9 kHz AM steps are offered without claiming a worldwide channel plan.
 
-The recorded reference configuration has completed both the 1.024 Msps soak and
-the 2.4 Msps / 60-minute target validation.
+## Scanner
 
-## Known receiver identifiers
+The Scanner works with a live, simulation or compatible replay source whose tuning context covers the selected range. Live tuning is serialized through the common radio command queue.
 
-The picker currently restricts selection to Realtek vendor identifier `0x0bda`
-and product identifiers `0x2832` or `0x2838`. A second-stage
-configuration/interface/endpoint validation runs before tuner commands.
+## ADS-B
 
-Unverified clone identifiers are deliberately excluded until descriptor evidence
-and a physical test record exist.
+The ADS-B browser decoder expects 1090 MHz and at least 2.0 Msps; the focused workflow configures 2.4 Msps. Fixture verification covers Mode S CRC-valid extended squitter, callsign, supported altitude/velocity, global airborne Compact Position Reporting and IQ-level pulse recovery. On-air aircraft reception remains a separate verification state.
 
-## Recorded physical reference configuration
+## Shared-memory path
 
-Reference product: `RTL2838UHIDIR`
+When cross-origin isolation and SharedArrayBuffer are available, the shared fixed-slot raw-input pool activates automatically. The transferable-buffer path remains the compatibility fallback.
 
-Conservative tuner identification: R820T/R820T2/R860 family.
+## Receive-only boundary
 
-Recorded successful checks:
-
-- direct WebUSB connection;
-- live spectrum/waterfall;
-- retuning while receiving;
-- gain and sample-rate changes;
-- stop/restart;
-- hot-unplug/reconnect;
-- 30-minute 1.024 Msps soak with zero visible drops;
-- on-air WFM, NFM, and AM audio;
-- AudioContext lifecycle;
-- 60-minute 2.4 Msps target soak;
-- 2.4 Msps receive plus capture;
-- SharedArrayBuffer stream path;
-- sustained audio without unacceptable recurring underruns;
-- bounded long-run memory/queue behavior.
-
-This does not establish support for every RTL2832U receiver, browser, operating
-system, tuner family, or sample rate.
-
-## Pending compatibility evidence
-
-- R828D physical device;
-- exact R860 physical identification;
-- wider current Chrome / Edge / Chromium operating-system matrix;
-- additional RTL2832U clone/device profiles.
-
-## v0.7 Mayhem core compatibility
-
-Version 0.7.0 uses native C++ `app::Registrar` translation units and a C++
-Home → Category → Application navigation stack inside WebAssembly. The browser
-shell checks that registry identity/order still matches the one generated
-cross-language definition.
-
-Exact upstream fixed-font bytes, bitmap/theme assets, and the complete upstream
-widget/focus implementation remain source-convergence work and are not described
-as complete compatibility.
-
-## Application states
-
-The launcher retains visible entries for supported, pending, and transmit-only
-applications. Verification terminology includes:
-
-- ready;
-- partial;
-- unavailable for connected hardware;
-- transmit-only;
-- browser port pending;
-- unit-tested;
-- replay-tested;
-- simulation-tested;
-- hardware-tested;
-- on-air behavior unverified.
-
-Transmit applications remain visible and locked on RTL-SDR hardware.
+Broadcast Radio, Amateur Radio, Scanner, ADS-B and the general Receiver are receive-only. Transmit applications remain visible but locked.

@@ -4,63 +4,48 @@ MAYHEM RTL is an independent browser derivative of `wonderingStars/mayhem-b200`,
 
 `44736b9ca844732e18f35e86eb5beece1d9c2c57`
 
-That project is itself derived from PortaPack Mayhem / PortaPack firmware. See
-`NOTICE.md` and the preserved GNU General Public License notices.
+That project is itself derived from PortaPack Mayhem / PortaPack firmware. See `NOTICE.md` and the preserved GNU General Public License notices.
 
-## Audited Mayhem / mayhem-b200 concepts and source
+## Audited Mayhem / mayhem-b200 concepts
 
-The browser port follows the audited upstream architecture for:
+The browser port follows audited upstream architecture and behavior for:
 
 - `radio::RadioDevice` abstraction;
 - receive-only capability policy;
 - 240 × 320 logical UI geometry;
-- RGB565 `ui::Color` packing;
-- 8 × 16 logical character metrics;
-- Mayhem `KeyEvent` ordinals;
-- Painter/display abstraction;
-- category-first Home navigation;
-- file-scope `app::Registrar` application-registration ownership;
+- Mayhem key ordinals and category navigation behavior;
+- application registry concepts;
 - spectrum/rendering behavior where applicable;
-- receiver-model and DSP behavior as ports are completed.
+- analog receive-mode organization, including the audited upstream USB/LSB/CW configuration in `src/apps/analog_audio_app.cpp`;
+- Mode S / ADS-B parsing behavior for the supported browser subset.
 
-Version 0.7.0 splits the former monolithic WebAssembly bridge into browser-port
-modules under `src/mayhem/` corresponding to those audited responsibilities.
-These files preserve the source lineage and are distributed under GNU General
-Public License version 2.0 or later.
-
-The freestanding browser runtime still does **not** claim byte-for-byte inclusion
-of the complete upstream fixed-font data, bitmap/theme resources, STL-based
-widget/focus implementation, or all native application bodies. See
-`UPSTREAM_RUNTIME_AUDIT.md` for the exact boundary.
+The current freestanding browser WebAssembly bridge is original browser-port code and does **not** claim that the complete upstream widget/font/icon/application translation units are linked.
 
 ## WebUSB RTL-SDR reference
 
-Low-level RTL2832U/R8xx browser access was adapted from and audited against
-`@jtarrio/webrtlsdr` / `jtarrio/webrtlsdr`, pinned at:
+Low-level RTL2832U/R8xx browser access was adapted from and audited against `@jtarrio/webrtlsdr` / `jtarrio/webrtlsdr`, pinned at:
 
 `5699cec220cb0349e8f9144b7b71d3d03b5d9dbf`
 
-Those adapted portions retain Apache License 2.0 notices; see
-`LICENSE.Apache-2.0` and `THIRD_PARTY_LICENSES.md`.
+Those adapted portions retain Apache License 2.0 notices; see `LICENSE.Apache-2.0` and `THIRD_PARTY_LICENSES.md`.
 
 ## Original MAYHEM RTL browser components
 
 Original browser-port work includes, among other modules:
 
 - Green Shoe application shell;
-- project state and migration;
-- capture/replay browser storage adapters;
+- project state/migration;
+- capture/replay storage adapters;
 - diagnostics and no-network audits;
 - processing worker integration;
-- browser WFM/NFM/AM demodulation kernels and AudioWorklet output adapter;
-- cross-language registry generator;
-- freestanding fixed-storage browser form of `AppRegistry` and navigation stack;
-- browser framebuffer `Display` adapter;
-- v0.5 Easy Mode receiver control deck;
-- v0.6 rate-aware stream planner;
-- v0.6 adaptive visualization governor;
-- v0.6 fixed-slot SharedArrayBuffer raw-sample pool;
-- browser deployment/PWA/update handling.
+- browser WFM/NFM/AM demodulation and AudioWorklet output adapter;
+- v0.8.2 worker-side USB/LSB complex sideband filtering, Receiver Incremental Tuning, CW beat generation and audio Automatic Gain Control;
+- v0.8.2 Amateur Radio band/input-path workflow;
+- single-source registry generation pipeline;
+- rate-aware stream planner, adaptive visualization governor and SharedArrayBuffer raw-sample pool;
+- modular C++/WebAssembly navigation and native file-scope registration bridge;
+- Broadcast Radio workflow and Frequency Scanner;
+- browser Mode S / ADS-B IQ detector, supported extended-squitter parser, tracker, structured panel and local graticule;
+- browser deployment/PWA/version-recovery handling.
 
-These components are distributed under the project's GNU General Public License
-version 2.0 or later terms unless a file states another compatible license.
+These components are distributed under the project's GNU General Public License version 2.0 or later terms unless a file states another compatible license.

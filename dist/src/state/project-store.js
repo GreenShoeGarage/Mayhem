@@ -46,6 +46,10 @@ export function migrateProject(candidate) {
     audioBandwidthHz: project.settings.audioBandwidthHz,
     squelchDb: project.settings.squelchDb,
     volume: project.settings.volume,
+    ritHz: project.settings.ritHz,
+    cwPitchHz: project.settings.cwPitchHz,
+    ssbLowCutHz: project.settings.ssbLowCutHz,
+    agcMode: project.settings.agcMode,
     ...station
   })) : [];
   project.schemaVersion = PROJECT_SCHEMA_VERSION;
@@ -61,12 +65,24 @@ export function validateProject(candidate) {
   const s = candidate?.settings ?? {};
   if (!isFiniteNumber(s.centerFrequencyHz) || s.centerFrequencyHz < 0 || s.centerFrequencyHz > 10e9) errors.push("Center frequency is invalid.");
   if (!isFiniteNumber(s.sampleRate) || s.sampleRate < 1 || s.sampleRate > 20e6) errors.push("Sample rate is invalid.");
-  if (!["wfm", "nfm", "am"].includes(s.modulation)) errors.push("Demodulation mode is invalid.");
+  if (!["wfm", "nfm", "am", "usb", "lsb", "cw"].includes(s.modulation)) errors.push("Demodulation mode is invalid.");
   if (!isFiniteNumber(s.volume) || s.volume < 0 || s.volume > 1) errors.push("Audio volume is invalid.");
   if (!isFiniteNumber(s.squelchDb) || s.squelchDb < -140 || s.squelchDb > 0) errors.push("Squelch threshold is invalid.");
   if (!["auto", "compatibility", "high-rate", "custom"].includes(s.performanceProfile)) errors.push("Performance profile is invalid.");
   if (!isFiniteNumber(s.processingQueueDepth) || s.processingQueueDepth < 2 || s.processingQueueDepth > 8) errors.push("Processing queue depth is invalid.");
   if (!isFiniteNumber(s.displayRateHz) || s.displayRateHz < 8 || s.displayRateHz > 60) errors.push("Display update rate is invalid.");
+  if (!["fm", "am"].includes(s.broadcastBand)) errors.push("Broadcast band preset is invalid.");
+  if (!isFiniteNumber(s.broadcastStepHz) || s.broadcastStepHz < 1_000 || s.broadcastStepHz > 1_000_000) errors.push("Broadcast channel step is invalid.");
+  if (!isFiniteNumber(s.scannerStartHz) || !isFiniteNumber(s.scannerEndHz) || s.scannerStartHz < 0 || s.scannerEndHz < s.scannerStartHz) errors.push("Scanner range is invalid.");
+  if (!isFiniteNumber(s.scannerStepHz) || s.scannerStepHz < 1 || s.scannerStepHz > 10_000_000) errors.push("Scanner step is invalid.");
+  if (!isFiniteNumber(s.scannerDwellMs) || s.scannerDwellMs < 20 || s.scannerDwellMs > 10_000) errors.push("Scanner dwell time is invalid.");
+  if (!isFiniteNumber(s.scannerThresholdDbfs) || s.scannerThresholdDbfs < -140 || s.scannerThresholdDbfs > 0) errors.push("Scanner threshold is invalid.");
+  if (!['160m','80m','60m','40m','30m','20m','17m','15m','12m','10m','6m','2m','1.25m','70cm'].includes(s.amateurBand)) errors.push("Amateur band preset is invalid.");
+  if (!isFiniteNumber(s.amateurStepHz) || s.amateurStepHz < 10 || s.amateurStepHz > 100_000) errors.push("Amateur tuning step is invalid.");
+  if (!isFiniteNumber(s.ssbLowCutHz) || s.ssbLowCutHz < 0 || s.ssbLowCutHz > 2000) errors.push("SSB low-cut setting is invalid.");
+  if (!isFiniteNumber(s.ritHz) || s.ritHz < -10_000 || s.ritHz > 10_000) errors.push("Receiver Incremental Tuning offset is invalid.");
+  if (!isFiniteNumber(s.cwPitchHz) || s.cwPitchHz < 200 || s.cwPitchHz > 1500) errors.push("CW pitch is invalid.");
+  if (!["off", "slow", "medium", "fast"].includes(s.agcMode)) errors.push("Audio Automatic Gain Control mode is invalid.");
   if (!Array.isArray(candidate?.stations) || candidate.stations.length > 5000) errors.push("Station list is invalid or too large.");
   if (!Array.isArray(candidate?.markers) || candidate.markers.length > 1000) errors.push("Marker list is invalid or too large.");
   return { valid: errors.length === 0, errors };

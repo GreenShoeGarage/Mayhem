@@ -53,10 +53,15 @@ test("schema 1 projects migrate audio and performance settings into the current 
   };
   const result = migrateProject(legacy);
   assert.equal(result.migrated, true);
-  assert.equal(result.project.schemaVersion, 3);
+  assert.equal(result.project.schemaVersion, 5);
   assert.equal(result.project.settings.modulation, "wfm");
   assert.equal(result.project.settings.audioOutputRate, 48000);
   assert.equal(result.project.settings.performanceProfile, "auto");
   assert.equal(result.project.settings.processingQueueDepth, 4);
+  assert.equal(result.project.settings.broadcastBand, "fm");
+  assert.equal(result.project.settings.scannerStepHz, 100_000);
+  assert.equal(result.project.settings.amateurBand, "20m");
+  assert.equal(result.project.settings.ritHz, 0);
+  assert.equal(result.project.settings.cwPitchHz, 700);
   assert.equal(validateProject(result.project).valid, true);
 });

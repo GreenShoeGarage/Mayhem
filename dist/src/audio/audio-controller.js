@@ -9,7 +9,25 @@ export class AudioController extends EventTarget {
     this.enabled = false;
     this.volume = 0.75;
     this.muted = false;
-    this.stats = { underruns: 0, queuedFrames: 0, pushedSamples: 0, squelchOpen: false, mode: "wfm", levelRms: 0 };
+    this.stats = this.#freshStats();
+  }
+
+  #freshStats() {
+    return {
+      underruns: 0,
+      rebufferEvents: 0,
+      queuedSamples: 0,
+      queuedMs: 0,
+      prebufferSamples: 0,
+      droppedInputSamples: 0,
+      pushedSamples: 0,
+      pushedFrames: 0,
+      pushErrors: 0,
+      buffering: true,
+      squelchOpen: false,
+      mode: "wfm",
+      levelRms: 0
+    };
   }
 
   get state() {
@@ -26,10 +44,25 @@ export class AudioController extends EventTarget {
       this.context.addEventListener?.("statechange", () => this.dispatchEvent(new CustomEvent("status", { detail: this.snapshot() })));
       if (!this.context.audioWorklet) throw new Error("AudioWorklet is unavailable in this browser.");
       await this.context.audioWorklet.addModule(this.workletUrl);
-      this.node = new AudioWorkletNode(this.context, "mayhem-rtl-audio-ring", { outputChannelCount: [2] });
+      this.node = new AudioWorkletNode(this.context, "mayhem-rtl-audio-ring", {
+        numberOfInputs: 0,
+        numberOfOutputs: 1,
+        outputChannelCount: [2]
+      });
       this.node.connect(this.context.destination);
       this.node.port.onmessage = (event) => {
-        if (typeof event.data === "number") this.stats.underruns = event.data;
+        if (typeof event.data === "number") {
+          this.stats.underruns = event.data;
+        } else if (event.data?.type === "status") {
+          const status = event.data;
+          this.stats.underruns = Number(status.underruns) || 0;
+          this.stats.rebufferEvents = Number(status.rebufferEvents) || 0;
+          this.stats.queuedSamples = Math.max(0, Number(status.queuedSamples) || 0);
+          this.stats.prebufferSamples = Math.max(0, Number(status.prebufferSamples) || 0);
+          this.stats.droppedInputSamples = Math.max(0, Number(status.droppedInputSamples) || 0);
+          this.stats.buffering = Boolean(status.buffering);
+          this.stats.queuedMs = this.context?.sampleRate ? (this.stats.queuedSamples / this.context.sampleRate) * 1000 : 0;
+        }
         this.dispatchEvent(new CustomEvent("status", { detail: this.snapshot() }));
       };
       this.setVolume(this.volume);
@@ -37,6 +70,7 @@ export class AudioController extends EventTarget {
     }
     if (this.context.state === "suspended") await this.context.resume();
     this.enabled = true;
+    this.stats = { ...this.#freshStats(), mode: this.stats.mode, squelchOpen: this.stats.squelchOpen };
     this.node.port.postMessage({ type: "reset" });
     this.log?.info("Browser audio enabled", { sampleRate: this.context.sampleRate });
     this.dispatchEvent(new CustomEvent("status", { detail: this.snapshot() }));
@@ -56,12 +90,23 @@ export class AudioController extends EventTarget {
 
   push(samples, metadata = {}) {
     if (!this.enabled || !this.node || !(samples instanceof Float32Array) || samples.length === 0) return false;
-    this.stats.pushedSamples += samples.length;
+    const sampleCount = samples.length;
     this.stats.squelchOpen = Boolean(metadata.squelchOpen);
     this.stats.mode = metadata.mode || this.stats.mode;
     this.stats.levelRms = Number(metadata.levelRms || 0);
-    this.node.port.postMessage({ type: "frame", samples, metadata }, [samples.buffer]);
-    return true;
+    try {
+      // Only the audio frame crosses into the worklet. Do not clone the worker's
+      // full metadata object (which also contains this same transferred buffer).
+      this.node.port.postMessage({ type: "frame", samples }, [samples.buffer]);
+      this.stats.pushedSamples += sampleCount;
+      this.stats.pushedFrames += 1;
+      return true;
+    } catch (error) {
+      this.stats.pushErrors += 1;
+      this.log?.error("Audio frame could not be queued", { message: error?.message ?? String(error) });
+      this.dispatchEvent(new CustomEvent("status", { detail: this.snapshot() }));
+      return false;
+    }
   }
 
   setVolume(value) {

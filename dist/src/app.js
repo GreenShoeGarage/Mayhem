@@ -15,9 +15,14 @@ import { MayhemFramebufferTarget } from "./panels/mayhem-framebuffer.js";
 import { AudioController } from "./audio/audio-controller.js";
 import { recommendedAudioBandwidth } from "./dsp/demodulators.js";
 import { buildStreamPlan, PerformanceGovernor, performanceLabel } from "./performance/stream-plan.js";
+import { BroadcastBand, broadcastBandDefinition, broadcastConfiguration, nextBroadcastFrequency } from "./radio/broadcast-radio.js";
+import { AMATEUR_BAND_ORDER, AmateurMode, amateurBandDefinition, amateurConfiguration, amateurFrequencyPath, amateurModeDefaults, clampAmateurFrequency } from "./radio/amateur-radio.js";
+import { ScannerController } from "./scanner/scanner-controller.js";
 import { downloadBlob, escapeCsv, formatBytes, formatDateTime, formatDuration, formatFrequency, formatRate, makeId, safeFilename } from "./utils/format.js";
 
 const $ = (id) => document.getElementById(id);
+const AUDIO_MODES = Object.freeze(["wfm", "nfm", "am", "usb", "lsb", "cw"]);
+const SSB_MODES = Object.freeze(["usb", "lsb", "cw"]);
 const appShell = $("app");
 const viewHost = $("viewHost");
 const inspectorHost = $("inspectorHost");
@@ -60,6 +65,10 @@ let captureFailure = null;
 let pendingTune = false;
 let updateWaiting = null;
 let statusTimer = null;
+let scanner = null;
+let adsbAircraft = new Map();
+let adsbRecentFrames = [];
+let adsbFrameCount = 0;
 
 function createSourceStats() {
   return { blocks: 0, bytes: 0, samples: 0, ringDrops: 0, startedAt: null, stoppedAt: null, effectiveSampleRate: 0, levelDbfs: null, lastBlockAt: null };
@@ -94,6 +103,37 @@ function staticInspector(title, html) {
 }
 
 function currentSettings() { return projectStore.project.settings; }
+
+function documentBuildVersion() {
+  return String(document.documentElement.dataset.appVersion || "").trim();
+}
+
+async function enforceRuntimeVersionConsistency() {
+  const htmlVersion = documentBuildVersion();
+  if (!htmlVersion || htmlVersion === APP_VERSION) return true;
+  const label = $("versionLabel");
+  if (label) {
+    label.textContent = `v${htmlVersion} / code v${APP_VERSION}`;
+    label.classList.add("version-mismatch");
+  }
+  console.error(`MAYHEM RTL version mismatch: HTML ${htmlVersion}, JavaScript ${APP_VERSION}`);
+  const retryKey = `mayhem-rtl-version-retry:${htmlVersion}->${APP_VERSION}`;
+  if (!sessionStorage.getItem(retryKey)) {
+    sessionStorage.setItem(retryKey, "1");
+    try {
+      const registrations = await navigator.serviceWorker?.getRegistrations?.() ?? [];
+      await Promise.all(registrations.map((registration) => registration.update().catch(() => undefined)));
+      const keys = await globalThis.caches?.keys?.() ?? [];
+      await Promise.all(keys.filter((key) => key.startsWith("mayhem-rtl-v") && !key.endsWith(APP_VERSION)).map((key) => globalThis.caches.delete(key)));
+    } catch { /* best-effort stale-cache recovery */ }
+    const url = new URL(location.href);
+    url.searchParams.set("mayhem_build", htmlVersion);
+    url.searchParams.set("reload", Date.now().toString(36));
+    location.replace(url);
+    return false;
+  }
+  throw new Error(`Application asset version mismatch persists after cache recovery: HTML ${htmlVersion}, JavaScript ${APP_VERSION}.`);
+}
 
 function selectedSourceLabel() {
   if (sourceType === "live") return radio.safeDeviceInfo(false).productName || "RTL2832U";
@@ -176,6 +216,7 @@ function audioStatusText() {
   if (!audio.enabled) return "off";
   if (audio.state === "suspended") return "suspended";
   if (settings.mute || audio.muted) return "muted";
+  if (audioStats.buffering) return "buffering";
   if (audioStats.squelchOpen === false) return "squelch";
   return String(settings.modulation || "wfm").toUpperCase();
 }
@@ -188,7 +229,13 @@ function audioProcessingSettings() {
     audioOutputRate: settings.audioOutputRate,
     audioBandwidthHz: settings.audioBandwidthHz,
     deemphasisUs: settings.deemphasisUs,
-    squelchDb: settings.squelchDb
+    squelchDb: settings.squelchDb,
+    ssbLowCutHz: settings.ssbLowCutHz,
+    ritHz: settings.ritHz,
+    cwPitchHz: settings.cwPitchHz,
+    agcMode: settings.agcMode,
+    decoderMode: activeApplicationId === "adsbrx" ? "adsb" : "none",
+    sampleRate: effectiveActual().sampleRate
   };
 }
 
@@ -290,20 +337,39 @@ function updateAudioControls() {
   const inspectorEnable = $("inspectorAudioEnable");
   if (inspectorEnable) { inspectorEnable.textContent = audio.enabled && audio.state === "suspended" ? "Resume Audio" : audio.enabled ? "Stop Audio" : "Enable Audio"; inspectorEnable.className = audio.enabled ? "secondary-button" : "primary-button"; inspectorEnable.disabled = !sourceRunning; }
   for (const id of ["quickMute", "inspectorMute"]) if ($(id)) { $(id).textContent = settings.mute ? "Unmute" : "Mute"; $(id).disabled = !audio.enabled; }
-  if ($("quickAudioStatus")) $("quickAudioStatus").textContent = audio.enabled ? `${mode.toUpperCase()} · ${audioStats.squelchOpen ? "squelch open" : "squelch closed"} · ${audioStats.underruns || 0} underruns` : "Audio off — browser playback starts only after a user gesture.";
-  if ($("inspectorAudioStatus")) $("inspectorAudioStatus").textContent = audio.enabled ? `${audio.state}; ${audioStats.underruns || 0} underruns` : "Audio off";
+  if ($("quickAudioStatus")) {
+    const queue = Number.isFinite(audioStats.queuedMs) ? `${audioStats.queuedMs.toFixed(0)} ms queued` : "queue unknown";
+    const gate = audioStats.buffering ? "buffering" : audioStats.squelchOpen ? "squelch open" : "squelch closed";
+    $("quickAudioStatus").textContent = audio.enabled ? `${mode.toUpperCase()} · ${gate} · ${queue} · ${audioStats.underruns || 0} rebuffer events` : "Audio off — browser playback starts only after a user gesture.";
+  }
+  if ($("inspectorAudioStatus")) $("inspectorAudioStatus").textContent = audio.enabled ? `${audio.state}; ${audioStats.buffering ? "buffering; " : ""}${audioStats.queuedMs?.toFixed?.(0) ?? 0} ms queued; ${audioStats.underruns || 0} rebuffer events` : "Audio off";
 }
 
 async function setModulation(mode) {
-  if (!["wfm", "nfm", "am"].includes(mode)) return;
+  if (!AUDIO_MODES.includes(mode)) return;
   const bandwidth = recommendedAudioBandwidth(mode);
+  const sidebandDefaults = SSB_MODES.includes(mode) ? amateurModeDefaults(mode) : null;
   projectStore.update((project) => {
     project.settings.modulation = mode;
     project.settings.audioBandwidthHz = bandwidth;
+    if (sidebandDefaults) {
+      project.settings.squelchDb = sidebandDefaults.squelchDb;
+      project.settings.ssbLowCutHz = sidebandDefaults.ssbLowCutHz;
+      project.settings.cwPitchHz = sidebandDefaults.cwPitchHz;
+      project.settings.agcMode = sidebandDefaults.agcMode;
+    }
   });
   activeApplicationId = mode;
-  if (sourceType === "simulation") simulation.configure({ scenario: mode });
-  processing?.updateSettings({ modulation: mode, audioBandwidthHz: bandwidth }, false, true);
+  if (sourceType === "simulation" && ["wfm", "nfm", "am"].includes(mode)) simulation.configure({ scenario: mode });
+  processing?.updateSettings({
+    modulation: mode,
+    audioBandwidthHz: bandwidth,
+    squelchDb: currentSettings().squelchDb,
+    ssbLowCutHz: currentSettings().ssbLowCutHz,
+    ritHz: currentSettings().ritHz,
+    cwPitchHz: currentSettings().cwPitchHz,
+    agcMode: currentSettings().agcMode
+  }, false, true);
   updateAudioControls();
   updateGlobalStatus();
 }
@@ -445,10 +511,12 @@ function bindProcessing() {
   processing.addEventListener("ack", (event) => updateProcessingTelemetry(event.detail));
   processing.addEventListener("audio", (event) => {
     const detail = event.detail;
-    audioStats = { ...audioStats, squelchOpen: detail.squelchOpen, mode: detail.mode, levelRms: detail.levelRms };
-    audio.push(detail.samples, detail);
+    audioStats = { ...audioStats, squelchOpen: detail.squelchOpen, mode: detail.mode, levelRms: detail.levelRms, workerAudioFrames: detail.audioFramesProduced, workerAudioSamples: detail.audioSamplesProduced };
+    const queued = audio.push(detail.samples, detail);
+    if (!queued && audio.enabled) log.warn("Demodulated audio frame was not accepted by the browser audio ring", { mode: detail.mode, samples: detail.samples?.length ?? 0 });
     updateAudioControls();
   });
+  processing.addEventListener("adsb", (event) => handleAdsbFrame(event.detail));
   processing.addEventListener("queue", (event) => {
     processingStats.pending = event.detail.pending;
     processingStats.capacity = event.detail.capacity;
@@ -511,6 +579,13 @@ function presentError(title, error, { receivingStopped = !sourceRunning, dataSaf
 }
 
 function navigate(view, { focus = true } = {}) {
+  if (currentView === "scanner" && view !== "scanner") scanner?.stop();
+  if (view === "receiver" && !["spectrum", "waterfall", "capture", ...AUDIO_MODES].includes(activeApplicationId)) activeApplicationId = currentSettings().modulation || "wfm";
+  if (view === "broadcast") activeApplicationId = "broadcast";
+  if (view === "amateur") activeApplicationId = "amateur";
+  if (view === "scanner") activeApplicationId = "scanner";
+  if (view === "adsb") activeApplicationId = "adsbrx";
+  syncAudioProcessing();
   currentView = view;
   if (compactNavMedia.matches) compactNavOpen = false;
   projectStore.update((project) => { project.activeView = view; });
@@ -532,6 +607,10 @@ function renderView() {
   else if (currentView === "stations") renderStations();
   else if (currentView === "captures") renderCaptures();
   else if (currentView === "replay") renderReplay();
+  else if (currentView === "broadcast") renderBroadcastRadio();
+  else if (currentView === "amateur") renderAmateurRadio();
+  else if (currentView === "scanner") renderScanner();
+  else if (currentView === "adsb") renderAdsb();
   else if (currentView === "compatibility") renderCompatibility();
   else if (currentView === "diagnostics") renderDiagnostics();
   else if (currentView === "settings") renderSettings();
@@ -562,7 +641,7 @@ function renderHome() {
     <div class="workflow-strip" aria-label="Fundamental workflow"><span class="workflow-step active">CONNECT</span><span class="workflow-step">TUNE</span><span class="workflow-step">INSPECT</span><span class="workflow-step">DEMODULATE</span><span class="workflow-step">DECODE</span><span class="workflow-step">CAPTURE</span><span class="workflow-step">REVIEW</span><span class="workflow-step">EXPORT</span></div>
     <div class="grid two">
       <article class="card"><div class="card-title-row"><div><span class="eyebrow">PREFLIGHT</span><h2>Browser and hosting</h2></div><span class="badge ${preflight.ok ? "ready" : "locked"}">${preflight.ok ? "READY" : "ACTION REQUIRED"}</span></div><p>The live-radio path requires a secure context, Web Universal Serial Bus (WebUSB), WebAssembly, and a processing worker. Shared memory is optional in this compatibility build.</p><div id="homePreflight" class="preflight-list"></div></article>
-      <article class="card"><div class="card-title-row"><div><span class="eyebrow">DEVELOPMENT TRUTH</span><h2>Version ${APP_VERSION} Mayhem core navigation</h2></div><span class="badge ready">v0.6 HARDWARE VALIDATED</span></div><p>The reference RTL2838UHIDIR configuration has now passed the v0.6 receiver, on-air audio, high-rate 2.4 million-samples-per-second, capture, SharedArrayBuffer, and long-run stability validation gates. Version 0.7 moves the Mayhem logical display out of the former monolithic bridge into upstream-shaped C++ UI geometry/color, display, Painter, navigation, and AppRegistry modules. Browser/WebAssembly application definitions now compile into individual file-scope Registrar translation units, matching mayhem-b200 registration semantics, and the core receives actual gain, tuner, drop, and error state from the live browser radio. Exact upstream fixed_8x16 glyph bytes, icon/theme resources, the complete widget implementation, scanner, and Automatic Dependent Surveillance–Broadcast decoding remain explicit follow-on work.</p><div class="metric-grid"><div class="metric"><span class="label">Upstream</span><strong class="value">44736b9c</strong></div><div class="metric"><span class="label">Transport reference</span><strong class="value">5699cec2</strong></div><div class="metric"><span class="label">Network</span><strong class="value">local only</strong></div><div class="metric"><span class="label">Transmit</span><strong class="value">unavailable</strong></div></div></article>
+      <article class="card"><div class="card-title-row"><div><span class="eyebrow">DEVELOPMENT TRUTH</span><h2>MAYHEM RTL v${APP_VERSION}</h2></div><span class="badge ready">v${APP_VERSION} ACTIVE</span></div><p>The reference RTL2838UHIDIR receive/high-rate path is physically validated; the repaired browser-audio path still awaits a focused operator re-check. This release adds USB, LSB, CW, and the Amateur Radio workspace on top of the Scanner, local Automatic Dependent Surveillance–Broadcast (ADS-B) decoder, and Broadcast AM/FM Radio workflow. SSB/CW are deterministic-fixture tested and await on-air validation.</p><div class="metric-grid"><div class="metric"><span class="label">Upstream</span><strong class="value">44736b9c</strong></div><div class="metric"><span class="label">Transport reference</span><strong class="value">5699cec2</strong></div><div class="metric"><span class="label">Network</span><strong class="value">local only</strong></div><div class="metric"><span class="label">Transmit</span><strong class="value">unavailable</strong></div></div></article>
     </div>
     <div class="grid three">
       <article class="card"><span class="eyebrow">LIVE</span><h2>RTL2832U through WebUSB</h2><p>Permission begins only from the Connect button. Device descriptors are validated before vendor control transfers are issued.</p><div class="card-actions"><button id="homeConnect2" class="primary-button" type="button">Connect RTL-SDR</button></div></article>
@@ -571,8 +650,8 @@ function renderHome() {
     </div>
   </section>`);
   renderPreflight($("homePreflight"));
-  $("homeConnect").addEventListener("click", connectRadio);
-  $("homeConnect2").addEventListener("click", connectRadio);
+  $("homeConnect").addEventListener("click", () => connectRadio());
+  $("homeConnect2").addEventListener("click", () => connectRadio());
   $("homeSimulation").addEventListener("click", () => enterSimulation());
   $("homeSimulation2").addEventListener("click", () => enterSimulation());
   $("homeReplay").addEventListener("click", () => navigate("replay"));
@@ -581,17 +660,19 @@ function renderHome() {
 function renderReceiver() {
   const settings = currentSettings();
   const actual = effectiveActual();
+  const fmBroadcastMismatch = actual.frequencyHz >= 87_500_000 && actual.frequencyHz <= 108_000_000 && settings.modulation !== "wfm";
   staticView(`<section class="view receiver-view">
     ${pageHeading("RECEIVER", "Tune, listen, inspect, and capture", "Easy Mode keeps the complete everyday receiver workflow in one control deck. Advanced Mode adds the Mayhem core, transport, Digital Signal Processing, and performance controls.", `<button id="receiverSourceButton" class="secondary-button" type="button">${sourceType === "none" ? "Choose source" : "Disconnect source"}</button>`)}
     <div id="receiverRunStatus" class="notice-box receiver-run-status" aria-live="polite"></div>
+    ${fmBroadcastMismatch ? `<div class="notice-box warning"><strong>FM broadcast frequency with ${settings.modulation.toUpperCase()} selected</strong><p>Broadcast FM in 87.5–108 MHz normally uses WFM. Choose WFM or open Broadcast Radio for the automatic FM preset.</p></div>` : ""}
     <section class="receiver-control-deck" aria-label="Essential receiver controls">
       <div class="receiver-control wide"><label for="quickFrequency">Frequency</label><div class="input-group"><input id="quickFrequency" type="number" min="0" step="0.001" value="${(actual.frequencyHz / 1e6).toFixed(6)}" ${sourceType === "replay" ? "disabled" : ""}><span class="unit">MHz</span></div></div>
-      <div class="receiver-control"><label for="quickTuningStep">Step</label><select id="quickTuningStep"><option value="1000">1 kHz</option><option value="5000">5 kHz</option><option value="12500">12.5 kHz</option><option value="25000">25 kHz</option><option value="100000">100 kHz</option></select></div>
-      <div class="receiver-control"><label for="quickModulation">Mode</label><select id="quickModulation"><option value="wfm">WFM</option><option value="nfm">NFM</option><option value="am">AM</option></select></div>
+      <div class="receiver-control"><label for="quickTuningStep">Step</label><select id="quickTuningStep"><option value="10">10 Hz</option><option value="50">50 Hz</option><option value="100">100 Hz</option><option value="500">500 Hz</option><option value="1000">1 kHz</option><option value="5000">5 kHz</option><option value="12500">12.5 kHz</option><option value="25000">25 kHz</option><option value="100000">100 kHz</option></select></div>
+      <div class="receiver-control"><label for="quickModulation">Mode</label><select id="quickModulation"><option value="wfm">WFM</option><option value="nfm">NFM</option><option value="am">AM</option><option value="usb">USB</option><option value="lsb">LSB</option><option value="cw">CW</option></select></div>
       <div class="receiver-control"><label for="quickGainMode">Gain</label><select id="quickGainMode" ${sourceType !== "live" ? "disabled" : ""}><option value="automatic">Automatic</option><option value="manual">Manual</option></select></div>
       <div id="quickManualGainControl" class="receiver-control wide"><label for="quickGain">Manual gain <span id="quickGainReadout">${settings.gainDb.toFixed(1)} dB</span></label><input id="quickGain" type="range" min="0" max="49.6" step="0.1" value="${settings.gainDb}" ${sourceType !== "live" || settings.gainMode === "automatic" ? "disabled" : ""}></div>
       <div class="receiver-control grow"><label for="quickVolume">Volume <span id="quickVolumeReadout">${Math.round(settings.volume * 100)}%</span></label><input id="quickVolume" type="range" min="0" max="1" step="0.01"></div>
-      <div class="receiver-control grow"><label for="quickSquelch">Squelch <span id="quickSquelchReadout">${settings.squelchDb.toFixed(0)} dBFS</span></label><input id="quickSquelch" type="range" min="-100" max="-5" step="1"></div>
+      <div class="receiver-control grow"><label for="quickSquelch">Squelch <span id="quickSquelchReadout">${settings.squelchDb.toFixed(0)} dBFS</span></label><input id="quickSquelch" type="range" min="-140" max="-5" step="1"></div>
       <div class="receiver-action-cluster">
         <button id="quickStart" class="primary-button" type="button">Start Receiver</button>
         <button id="quickStop" class="secondary-button" type="button">Stop Receiver</button>
@@ -742,7 +823,11 @@ function openApplication(application, evaluation) {
     return;
   }
   if (["spectrum", "waterfall", "capture"].includes(application.id)) navigate("receiver");
-  else if (["wfm", "nfm", "am"].includes(application.id)) { setModulation(application.id); navigate("receiver"); }
+  else if (AUDIO_MODES.includes(application.id)) { setModulation(application.id); navigate(SSB_MODES.includes(application.id) ? "amateur" : "receiver"); }
+  else if (application.id === "amateur") { navigate("amateur"); applyAmateurBand(currentSettings().amateurBand, { restart: true, preserveMode: true }).catch((error) => presentError("Amateur Radio preset could not be applied", error, { receivingStopped: !sourceRunning })); }
+  else if (application.id === "broadcast") { navigate("broadcast"); applyBroadcastBand(currentSettings().broadcastBand === "am" ? BroadcastBand.AM : BroadcastBand.FM, { restart: true }).catch((error) => presentError("Broadcast preset could not be applied", error, { receivingStopped: !sourceRunning })); }
+  else if (application.id === "scanner") navigate("scanner");
+  else if (application.id === "adsbrx") navigate("adsb");
   else if (application.id === "simulation") enterSimulation();
   else if (application.id === "replay") navigate("replay");
   else if (application.id === "diagnostics") navigate("diagnostics");
@@ -759,7 +844,7 @@ function renderStations() {
   else {
     const wrap = node("div", { class: "table-wrap" });
     const table = node("table");
-    const head = node("thead", {}, node("tr", {}, ...["Name", "Frequency", "Rate", "Gain", "Notes", "Actions"].map((label) => node("th", { text: label }))));
+    const head = node("thead", {}, node("tr", {}, ...["Name", "Frequency", "Mode", "Rate", "Gain", "Notes", "Actions"].map((label) => node("th", { text: label }))));
     const body = node("tbody");
     for (const station of projectStore.project.stations) {
       const use = node("button", { class: "small-button", type: "button", text: "Tune", onclick: () => recallStation(station) });
@@ -789,6 +874,12 @@ function saveCurrentStation() {
     audioBandwidthHz: currentSettings().audioBandwidthHz,
     squelchDb: currentSettings().squelchDb,
     volume: currentSettings().volume,
+    ritHz: currentSettings().ritHz,
+    cwPitchHz: currentSettings().cwPitchHz,
+    ssbLowCutHz: currentSettings().ssbLowCutHz,
+    agcMode: currentSettings().agcMode,
+    directSampling: currentSettings().directSampling,
+    amateurBand: currentSettings().amateurBand,
     notes: "",
     createdAt: new Date().toISOString()
   };
@@ -806,8 +897,12 @@ async function recallStation(station) {
   if (Number.isFinite(station.audioBandwidthHz)) { projectStore.update((project) => { project.settings.audioBandwidthHz = station.audioBandwidthHz; }); processing?.updateSettings({ audioBandwidthHz: station.audioBandwidthHz }, false, true); }
   if (Number.isFinite(station.squelchDb)) setSquelch(station.squelchDb);
   if (Number.isFinite(station.volume)) setAudioVolume(station.volume);
+  for (const [key, value] of [["ritHz", station.ritHz], ["cwPitchHz", station.cwPitchHz], ["ssbLowCutHz", station.ssbLowCutHz]]) if (Number.isFinite(value)) { projectStore.update((project) => { project.settings[key] = value; }); processing?.updateSettings({ [key]: value }, false, true); }
+  if (["off", "slow", "medium", "fast"].includes(station.agcMode)) { projectStore.update((project) => { project.settings.agcMode = station.agcMode; }); processing?.updateSettings({ agcMode: station.agcMode }, false, true); }
+  if (station.amateurBand) projectStore.update((project) => { project.settings.amateurBand = station.amateurBand; });
+  if (station.directSampling && sourceType === "live" && radio.device) await updateSetting("directSampling", station.directSampling);
   await tuneTo(station.frequencyHz);
-  navigate("receiver");
+  navigate(SSB_MODES.includes(station.modulation) || station.amateurBand ? "amateur" : "receiver");
 }
 
 function exportStationsCsv() {
@@ -908,11 +1003,461 @@ async function selectReplaySource() {
   sourceType = "replay";
   sourceRunning = false;
   sourceStats = createSourceStats();
-  if (["wfm", "nfm", "am"].includes(replay.metadata?.modulation)) await setModulation(replay.metadata.modulation);
+  if (AUDIO_MODES.includes(replay.metadata?.modulation)) await setModulation(replay.metadata.modulation);
   if (Number.isFinite(replay.metadata?.squelchDb)) setSquelch(replay.metadata.squelchDb);
+  for (const [key, value] of [["ritHz", replay.metadata?.ritHz], ["cwPitchHz", replay.metadata?.cwPitchHz], ["ssbLowCutHz", replay.metadata?.ssbLowCutHz]]) if (Number.isFinite(value)) projectStore.update((project) => { project.settings[key] = value; });
+  if (["off", "slow", "medium", "fast"].includes(replay.metadata?.agcMode)) projectStore.update((project) => { project.settings.agcMode = replay.metadata.agcMode; });
   processing?.reset();
   stateMachine.force(ConnectionState.REPLAY, "Local capture selected");
   updateGlobalStatus();
+}
+
+
+function broadcastCaps() {
+  if (sourceType === "live" && radio.device) return radio.caps;
+  return { minFrequencyHz: 28_800_000, maxFrequencyHz: 1_766_000_000, directSampling: true };
+}
+
+async function applyBroadcastBand(band, { restart = true } = {}) {
+  const definition = broadcastBandDefinition(band);
+  const settings = currentSettings();
+  const inBand = settings.centerFrequencyHz >= definition.startHz && settings.centerFrequencyHz <= definition.endHz;
+  const desiredFrequency = inBand ? settings.centerFrequencyHz : definition.defaultHz;
+  const config = broadcastConfiguration(band, broadcastCaps(), { centerFrequencyHz: desiredFrequency });
+  if (config.blocked) {
+    showMessage({ eyebrow: "BROADCAST RADIO", title: `${config.label} is unavailable on this receiver profile`, body: config.reason });
+    return false;
+  }
+  const wasRunning = sourceRunning;
+  if (wasRunning && sourceType === "live" && Number(effectiveActual().sampleRate) !== config.sampleRate) await stopSource("Changing broadcast band");
+  projectStore.update((project) => {
+    project.settings.broadcastBand = config.band;
+    project.settings.broadcastStepHz = config.tuningStepHz;
+    project.settings.modulation = config.modulation;
+    project.settings.audioBandwidthHz = config.audioBandwidthHz;
+    project.settings.deemphasisUs = config.deemphasisUs;
+    project.settings.directSampling = config.directSampling;
+    // Broadcast audio is continuous-program material. Open squelch by default so
+    // a valid station cannot be accidentally silenced by a stale receiver threshold.
+    project.settings.squelchDb = config.squelchDb;
+  });
+  if (Number(currentSettings().sampleRate) !== config.sampleRate) await updateSetting("sampleRate", config.sampleRate);
+  if (sourceType === "live" && radio.device && config.directSamplingRequired) await updateSetting("directSampling", config.directSampling);
+  await setModulation(config.modulation);
+  const actual = await tuneTo(config.frequencyHz);
+  if (sourceType === "live" && radio.device && !config.directSamplingRequired && radio.actual.directSampling !== 0) await updateSetting("directSampling", "off");
+  activeApplicationId = "broadcast";
+  syncAudioProcessing({ resetAudio: true });
+  if (wasRunning && !sourceRunning && restart) await startSource();
+  if (currentView === "broadcast") renderBroadcastRadio();
+  return actual != null;
+}
+
+function renderBroadcastRadio() {
+  const settings = currentSettings();
+  const band = settings.broadcastBand === "am" ? BroadcastBand.AM : BroadcastBand.FM;
+  const definition = broadcastBandDefinition(band);
+  const actual = effectiveActual();
+  const config = broadcastConfiguration(band, broadcastCaps(), { centerFrequencyHz: actual.frequencyHz });
+  const displayValue = band === BroadcastBand.AM ? (actual.frequencyHz / 1000).toFixed(0) : (actual.frequencyHz / 1e6).toFixed(1);
+  const unit = band === BroadcastBand.AM ? "kHz" : "MHz";
+  const amNote = band === BroadcastBand.AM ? `<div class="notice-box ${config.directSamplingRequired ? "warning" : "success"}"><strong>${config.directSamplingRequired ? "Direct sampling path" : "Normal tuner path"}</strong><p>${config.reason}</p></div>` : "";
+  staticView(`<section class="view broadcast-view">
+    ${pageHeading("BROADCAST RADIO", "Listen to AM and FM radio", "A focused radio experience built on the physically validated WFM and AM demodulators. Nothing is streamed or looked up online.", `<button id="broadcastReceiver" class="secondary-button" type="button">Open full receiver</button>`)}
+    <div class="broadcast-band-switch" role="group" aria-label="Broadcast band"><button id="broadcastFm" class="band-button ${band === "fm" ? "active" : ""}" type="button"><strong>FM</strong><span>87.5–108 MHz · WFM</span></button><button id="broadcastAm" class="band-button ${band === "am" ? "active" : ""}" type="button"><strong>AM</strong><span>530–1710 kHz · AM</span></button></div>
+    <div class="broadcast-radio-console card">
+      <span class="eyebrow">${definition.label.toUpperCase()}</span>
+      <div class="broadcast-frequency"><button id="broadcastPrev" class="tune-button" type="button" aria-label="Previous channel">−</button><div><input id="broadcastFrequency" type="number" value="${displayValue}" step="${band === "am" ? Math.max(1, settings.broadcastStepHz / 1000) : Math.max(.1, settings.broadcastStepHz / 1e6)}"><span>${unit}</span></div><button id="broadcastNext" class="tune-button" type="button" aria-label="Next channel">+</button></div>
+      <div class="broadcast-meta"><span>${settings.modulation.toUpperCase()}</span><span>${formatRate(effectiveActual().sampleRate)}</span><span>${sourceRunning ? "RECEIVING" : sourceType === "live" ? "CONNECTED — STOPPED" : "NO LIVE SOURCE"}</span><span>${audio.enabled ? audioStatusText() : "AUDIO OFF"}</span></div>
+      <div class="broadcast-actions"><button id="broadcastConnect" class="${sourceType === "none" ? "primary-button" : "secondary-button"}" type="button">${sourceType === "none" ? "Connect RTL-SDR" : sourceRunning ? "Stop Receiver" : "Start Receiver"}</button><button id="broadcastAudio" class="${audio.enabled ? "secondary-button" : "primary-button"}" type="button" ${!sourceRunning ? "disabled" : ""}>${audio.enabled ? "Stop Audio" : "Enable Audio"}</button><button id="broadcastMute" class="secondary-button" type="button" ${!audio.enabled ? "disabled" : ""}>${settings.mute ? "Unmute" : "Mute"}</button><button id="broadcastSave" class="secondary-button" type="button">Save Station</button></div>
+      <div class="grid two compact-grid"><div class="form-row"><label for="broadcastVolume">Volume <span id="broadcastVolumeReadout">${Math.round(settings.volume * 100)}%</span></label><input id="broadcastVolume" type="range" min="0" max="1" step="0.01" value="${settings.volume}"></div><div class="form-row"><label for="broadcastStep">Channel step</label><select id="broadcastStep">${band === "am" ? `<option value="10000">10 kHz</option><option value="9000">9 kHz</option>` : `<option value="100000">100 kHz</option><option value="200000">200 kHz</option>`}</select></div></div>
+    </div>${amNote}
+    <div class="notice-box"><strong>Band limits are presets, not a regulatory database.</strong><p>Broadcast allocations and channel spacing vary by country. MAYHEM RTL does not contact a station directory or send your listening activity anywhere.</p></div>
+  </section>`);
+  $("broadcastStep").value = String(settings.broadcastStepHz || definition.stepHz);
+  $("broadcastFm").addEventListener("click", () => applyBroadcastBand(BroadcastBand.FM));
+  $("broadcastAm").addEventListener("click", () => applyBroadcastBand(BroadcastBand.AM));
+  $("broadcastPrev").addEventListener("click", () => tuneBroadcast(-1));
+  $("broadcastNext").addEventListener("click", () => tuneBroadcast(1));
+  $("broadcastFrequency").addEventListener("change", (event) => tuneBroadcastAbsolute(Number(event.target.value) * (band === "am" ? 1e3 : 1e6)));
+  $("broadcastStep").addEventListener("change", (event) => projectStore.update((project) => { project.settings.broadcastStepHz = Number(event.target.value); }));
+  $("broadcastVolume").addEventListener("input", (event) => { setAudioVolume(event.target.value); if ($("broadcastVolumeReadout")) $("broadcastVolumeReadout").textContent = `${Math.round(Number(event.target.value) * 100)}%`; });
+  $("broadcastConnect").addEventListener("click", async () => {
+    if (sourceType === "none") {
+      await applyBroadcastBand(band, { restart: false });
+      await connectRadio({ view: "broadcast", applicationId: "broadcast" });
+      await applyBroadcastBand(band, { restart: false });
+    } else if (sourceRunning) await stopSource("Broadcast receiver stopped");
+    else { await applyBroadcastBand(band, { restart: false }); await startSource(); }
+    if (currentView === "broadcast") renderBroadcastRadio();
+  });
+  $("broadcastAudio").addEventListener("click", async () => { await handleAudioButton(); if (currentView === "broadcast") renderBroadcastRadio(); });
+  $("broadcastMute").addEventListener("click", () => { toggleMute(); renderBroadcastRadio(); });
+  $("broadcastSave").addEventListener("click", saveCurrentStation);
+  $("broadcastReceiver").addEventListener("click", () => navigate("receiver"));
+}
+
+async function tuneBroadcast(direction) {
+  const settings = currentSettings();
+  const band = settings.broadcastBand === "am" ? BroadcastBand.AM : BroadcastBand.FM;
+  const next = nextBroadcastFrequency(band, effectiveActual().frequencyHz, direction, settings.broadcastStepHz);
+  await tuneBroadcastAbsolute(next);
+}
+
+async function tuneBroadcastAbsolute(frequencyHz) {
+  const settings = currentSettings();
+  const band = settings.broadcastBand === "am" ? BroadcastBand.AM : BroadcastBand.FM;
+  const definition = broadcastBandDefinition(band);
+  const frequency = Math.max(definition.startHz, Math.min(definition.endHz, Math.round(frequencyHz)));
+  await tuneTo(frequency);
+  if (currentView === "broadcast") renderBroadcastRadio();
+}
+
+function scannerTune(frequencyHz) {
+  const requested = Math.max(0, Math.round(Number(frequencyHz)));
+  if (sourceType === "live" && radio.device) return radio.setFrequency(requested).then((actual) => { updateGlobalStatus(); return actual; });
+  if (sourceType === "simulation") { simulation.configure({ centerFrequencyHz: requested }); return Promise.resolve(requested); }
+  return Promise.resolve(requested);
+}
+
+function amateurCaps() {
+  if (sourceType === "live" && radio.device) return radio.caps;
+  return { minFrequencyHz: 28_800_000, maxFrequencyHz: 1_766_000_000, directSampling: true };
+}
+
+async function applyAmateurBand(band, { restart = true, preserveMode = false } = {}) {
+  const definition = amateurBandDefinition(band);
+  const settings = currentSettings();
+  const inBand = settings.centerFrequencyHz >= definition.startHz && settings.centerFrequencyHz <= definition.endHz;
+  const desiredFrequency = inBand ? settings.centerFrequencyHz : definition.defaultHz;
+  const config = amateurConfiguration(band, amateurCaps(), { ...settings, centerFrequencyHz: desiredFrequency }, { preserveMode });
+  if (config.blocked) {
+    showMessage({ eyebrow: "AMATEUR RADIO", title: `${config.label} is unavailable on this receiver profile`, body: config.reason });
+    return false;
+  }
+  const wasRunning = sourceRunning;
+  const pathChange = sourceType === "live" && radio.device && currentSettings().directSampling !== config.directSampling;
+  const rateChange = sourceType === "live" && radio.device && Number(effectiveActual().sampleRate) !== config.sampleRate;
+  if (wasRunning && (pathChange || rateChange)) await stopSource("Changing amateur-radio band");
+  // Apply the hardware input-path change before mirroring the desired value into
+  // project state. Otherwise the project update makes the later comparison look
+  // equal even though the physical direct-sampling method has not changed yet.
+  if (pathChange) await updateSetting("directSampling", config.directSampling);
+  projectStore.update((project) => {
+    project.settings.amateurBand = config.band;
+    project.settings.amateurStepHz = config.tuningStepHz;
+    project.settings.modulation = config.mode;
+    project.settings.audioBandwidthHz = config.audioBandwidthHz;
+    project.settings.ssbLowCutHz = config.ssbLowCutHz;
+    project.settings.cwPitchHz = config.cwPitchHz;
+    project.settings.agcMode = config.agcMode;
+    project.settings.squelchDb = config.squelchDb;
+    project.settings.directSampling = config.directSampling;
+    project.settings.ritHz = config.ritHz;
+  });
+  if (Number(currentSettings().sampleRate) !== config.sampleRate) await updateSetting("sampleRate", config.sampleRate);
+  await setModulation(config.mode);
+  const actual = await tuneTo(config.frequencyHz);
+  activeApplicationId = "amateur";
+  syncAudioProcessing({ resetAudio: true });
+  if (wasRunning && !sourceRunning && restart) await startSource();
+  if (currentView === "amateur") renderAmateurRadio();
+  return actual != null;
+}
+
+async function setAmateurMode(mode) {
+  if (!Object.values(AmateurMode).includes(mode)) return;
+  const defaults = amateurModeDefaults(mode);
+  projectStore.update((project) => {
+    project.settings.modulation = mode;
+    project.settings.audioBandwidthHz = defaults.audioBandwidthHz;
+    project.settings.ssbLowCutHz = defaults.ssbLowCutHz;
+    project.settings.amateurStepHz = defaults.tuningStepHz;
+    project.settings.squelchDb = defaults.squelchDb;
+    project.settings.cwPitchHz = defaults.cwPitchHz;
+    project.settings.agcMode = defaults.agcMode;
+  });
+  await setModulation(mode);
+  activeApplicationId = "amateur";
+  processing?.updateSettings({
+    audioBandwidthHz: currentSettings().audioBandwidthHz,
+    ssbLowCutHz: currentSettings().ssbLowCutHz,
+    squelchDb: currentSettings().squelchDb,
+    cwPitchHz: currentSettings().cwPitchHz,
+    agcMode: currentSettings().agcMode
+  }, false, true);
+  if (currentView === "amateur") renderAmateurRadio();
+}
+
+async function tuneAmateurAbsolute(frequencyHz) {
+  const band = currentSettings().amateurBand;
+  const frequency = clampAmateurFrequency(band, frequencyHz);
+  const path = amateurFrequencyPath(frequency, amateurCaps());
+  if (path.blocked) {
+    showMessage({ eyebrow: "AMATEUR RADIO", title: "Selected HF frequency is unavailable", body: path.reason });
+    return null;
+  }
+  const wasRunning = sourceRunning;
+  const pathChange = sourceType === "live" && radio.device && currentSettings().directSampling !== path.directSampling;
+  if (wasRunning && pathChange) await stopSource("Changing HF input path");
+  if (pathChange) await updateSetting("directSampling", path.directSampling);
+  else projectStore.update((project) => { project.settings.directSampling = path.directSampling; });
+  const actual = await tuneTo(frequency);
+  if (wasRunning && !sourceRunning) await startSource();
+  if (currentView === "amateur") renderAmateurRadio();
+  return actual;
+}
+
+function renderAmateurRadio() {
+  const settings = currentSettings();
+  const band = amateurBandDefinition(settings.amateurBand);
+  const actual = effectiveActual();
+  const config = amateurConfiguration(band.id, amateurCaps(), { ...settings, centerFrequencyHz: actual.frequencyHz }, { preserveMode: true });
+  const mode = Object.values(AmateurMode).includes(settings.modulation) ? settings.modulation : band.defaultMode;
+  const sideband = mode === AmateurMode.USB || mode === AmateurMode.LSB;
+  const cw = mode === AmateurMode.CW;
+  const filterOptions = cw
+    ? [250, 400, 500, 800, 1000]
+    : sideband
+      ? [1800, 2100, 2400, 2700, 3000]
+      : mode === AmateurMode.NFM
+        ? [2500, 3500, 5000]
+        : [4000, 5000, 6000];
+  const bandOptions = AMATEUR_BAND_ORDER.map((id) => {
+    const definition = amateurBandDefinition(id);
+    return `<option value="${id}">${definition.label} · ${(definition.startHz / 1e6).toFixed(definition.startHz < 10e6 ? 3 : 2)}–${(definition.endHz / 1e6).toFixed(definition.endHz < 10e6 ? 3 : 2)} MHz</option>`;
+  }).join("");
+  const pathClass = config.directSamplingRequired ? "warning" : "success";
+  const effectiveListenHz = actual.frequencyHz + Number(settings.ritHz || 0);
+  staticView(`<section class="view amateur-view">
+    ${pageHeading("AMATEUR RADIO", "USB, LSB, CW, AM, and NFM receiver", "A receive-only amateur-radio workbench with fine tuning, narrow filters, audio Automatic Gain Control (AGC), and automatic HF input-path selection. Band presets are conveniences, not a regulatory database.", `<button id="amateurReceiver" class="secondary-button" type="button">Open full receiver</button>`)}
+    <div class="ham-console card">
+      <div class="ham-top-grid">
+        <div class="form-row"><label for="amateurBand">Band preset</label><select id="amateurBand">${bandOptions}</select></div>
+        <div class="form-row"><label for="amateurMode">Mode</label><select id="amateurMode"><option value="lsb">LSB</option><option value="usb">USB</option><option value="cw">CW</option><option value="am">AM</option><option value="nfm">NFM</option></select></div>
+        <div class="form-row"><label for="amateurStep">Tuning step</label><select id="amateurStep"><option value="10">10 Hz</option><option value="50">50 Hz</option><option value="100">100 Hz</option><option value="500">500 Hz</option><option value="1000">1 kHz</option><option value="2500">2.5 kHz</option><option value="5000">5 kHz</option><option value="12500">12.5 kHz</option><option value="25000">25 kHz</option></select></div>
+      </div>
+      <div class="ham-frequency-row"><button id="amateurDown" class="tune-button" type="button" aria-label="Tune down">−</button><div class="ham-frequency"><input id="amateurFrequency" type="number" min="${(band.startHz / 1e6).toFixed(6)}" max="${(band.endHz / 1e6).toFixed(6)}" step="0.00001" value="${(actual.frequencyHz / 1e6).toFixed(6)}"><span>MHz</span></div><button id="amateurUp" class="tune-button" type="button" aria-label="Tune up">+</button></div>
+      <div class="ham-readout"><span>${band.label}</span><span>${mode.toUpperCase()}</span><span>${formatRate(effectiveActual().sampleRate)}</span><span>${sourceRunning ? "RECEIVING" : sourceType === "live" ? "CONNECTED — STOPPED" : "NO LIVE SOURCE"}</span><span>${audio.enabled ? audioStatusText() : "AUDIO OFF"}</span></div>
+      <div class="ham-actions"><button id="amateurConnect" class="${sourceType === "none" ? "primary-button" : "secondary-button"}" type="button">${sourceType === "none" ? "Connect RTL-SDR" : sourceRunning ? "Stop Receiver" : "Start Receiver"}</button><button id="amateurAudio" class="${audio.enabled ? "secondary-button" : "primary-button"}" type="button" ${!sourceRunning ? "disabled" : ""}>${audio.enabled ? "Stop Audio" : "Enable Audio"}</button><button id="amateurMute" class="secondary-button" type="button" ${!audio.enabled ? "disabled" : ""}>${settings.mute ? "Unmute" : "Mute"}</button><button id="amateurSave" class="secondary-button" type="button">Save Station</button></div>
+      <div class="ham-settings-grid">
+        <div class="form-row"><label for="amateurFilter">Receive filter</label><select id="amateurFilter">${filterOptions.map((value) => `<option value="${value}">${value >= 1000 ? `${(value / 1000).toFixed(value % 1000 ? 1 : 0)} kHz` : `${value} Hz`}</option>`).join("")}</select></div>
+        <div class="form-row"><label for="amateurRit">Receiver Incremental Tuning (RIT)</label><div class="input-group"><input id="amateurRit" type="number" min="-5000" max="5000" step="10" value="${settings.ritHz || 0}"><span class="unit">Hz</span></div><div class="field-help">Listening center: ${formatFrequency(effectiveListenHz, 5)}</div></div>
+        <div class="form-row ${sideband || cw ? "" : "inactive"}"><label for="amateurAgc">Audio AGC</label><select id="amateurAgc" ${sideband || cw ? "" : "disabled"}><option value="off">Off</option><option value="fast">Fast</option><option value="medium">Medium</option><option value="slow">Slow</option></select></div>
+        <div class="form-row ${sideband ? "" : "inactive"}"><label for="amateurLowCut">SSB low cut</label><div class="input-group"><input id="amateurLowCut" type="number" min="0" max="1200" step="50" value="${settings.ssbLowCutHz}" ${sideband ? "" : "disabled"}><span class="unit">Hz</span></div></div>
+        <div class="form-row ${cw ? "" : "inactive"}"><label for="amateurCwPitch">CW beat pitch</label><div class="input-group"><input id="amateurCwPitch" type="range" min="400" max="1000" step="10" value="${settings.cwPitchHz}" ${cw ? "" : "disabled"}><span id="amateurCwPitchReadout" class="unit">${settings.cwPitchHz} Hz</span></div></div>
+        <div class="form-row"><label for="amateurVolume">Volume <span id="amateurVolumeReadout">${Math.round(settings.volume * 100)}%</span></label><input id="amateurVolume" type="range" min="0" max="1" step="0.01" value="${settings.volume}"></div>
+      </div>
+      <div class="ham-rit-buttons"><button id="ritMinus" class="small-button" type="button">RIT −100</button><button id="ritZero" class="small-button" type="button">RIT 0</button><button id="ritPlus" class="small-button" type="button">RIT +100</button></div>
+    </div>
+    <div class="notice-box ${pathClass}"><strong>${config.directSamplingRequired ? "HF direct-sampling path" : "Normal tuner path"}</strong><p>${config.reason}</p></div>
+    <div class="notice-box"><strong>${band.label} preset · ${formatFrequency(band.startHz, 4)} to ${formatFrequency(band.endHz, 4)}</strong><p>${band.note} These presets do not determine where you are legally permitted to transmit; MAYHEM RTL itself remains receive-only.</p></div>
+  </section>`);
+  $("amateurBand").value = band.id;
+  $("amateurMode").value = mode;
+  $("amateurStep").value = String(settings.amateurStepHz || amateurModeDefaults(mode).tuningStepHz);
+  $("amateurFilter").value = String(settings.audioBandwidthHz);
+  if (!filterOptions.includes(Number(settings.audioBandwidthHz))) $("amateurFilter").value = String(filterOptions[Math.floor(filterOptions.length / 2)]);
+  $("amateurAgc").value = settings.agcMode;
+  $("amateurBand").addEventListener("change", (event) => applyAmateurBand(event.target.value, { restart: true, preserveMode: false }));
+  $("amateurMode").addEventListener("change", (event) => setAmateurMode(event.target.value));
+  $("amateurStep").addEventListener("change", (event) => projectStore.update((project) => { project.settings.amateurStepHz = Number(event.target.value); }));
+  $("amateurDown").addEventListener("click", () => tuneAmateurAbsolute(actual.frequencyHz - Number(currentSettings().amateurStepHz || 100)));
+  $("amateurUp").addEventListener("click", () => tuneAmateurAbsolute(actual.frequencyHz + Number(currentSettings().amateurStepHz || 100)));
+  $("amateurFrequency").addEventListener("change", (event) => tuneAmateurAbsolute(Number(event.target.value) * 1e6));
+  $("amateurFilter").addEventListener("change", (event) => { const value = Number(event.target.value); projectStore.update((project) => { project.settings.audioBandwidthHz = value; }); processing?.updateSettings({ audioBandwidthHz: value }, false, true); renderAmateurRadio(); });
+  $("amateurRit").addEventListener("change", (event) => { const value = Math.max(-5000, Math.min(5000, Number(event.target.value) || 0)); projectStore.update((project) => { project.settings.ritHz = value; }); processing?.updateSettings({ ritHz: value }, false, true); renderAmateurRadio(); });
+  $("amateurLowCut").addEventListener("change", (event) => { const value = Math.max(0, Math.min(1200, Number(event.target.value) || 0)); projectStore.update((project) => { project.settings.ssbLowCutHz = value; }); processing?.updateSettings({ ssbLowCutHz: value }, false, true); });
+  $("amateurCwPitch").addEventListener("input", (event) => { $("amateurCwPitchReadout").textContent = `${event.target.value} Hz`; });
+  $("amateurCwPitch").addEventListener("change", (event) => { const value = Number(event.target.value); projectStore.update((project) => { project.settings.cwPitchHz = value; }); processing?.updateSettings({ cwPitchHz: value }, false, true); });
+  $("amateurAgc").addEventListener("change", (event) => { projectStore.update((project) => { project.settings.agcMode = event.target.value; }); processing?.updateSettings({ agcMode: event.target.value }, false, true); });
+  $("amateurVolume").addEventListener("input", (event) => { setAudioVolume(event.target.value); $("amateurVolumeReadout").textContent = `${Math.round(Number(event.target.value) * 100)}%`; });
+  $("ritMinus").addEventListener("click", () => { const value = Math.max(-5000, Number(currentSettings().ritHz || 0) - 100); projectStore.update((project) => { project.settings.ritHz = value; }); processing?.updateSettings({ ritHz: value }, false, true); renderAmateurRadio(); });
+  $("ritZero").addEventListener("click", () => { projectStore.update((project) => { project.settings.ritHz = 0; }); processing?.updateSettings({ ritHz: 0 }, false, true); renderAmateurRadio(); });
+  $("ritPlus").addEventListener("click", () => { const value = Math.min(5000, Number(currentSettings().ritHz || 0) + 100); projectStore.update((project) => { project.settings.ritHz = value; }); processing?.updateSettings({ ritHz: value }, false, true); renderAmateurRadio(); });
+  $("amateurConnect").addEventListener("click", async () => {
+    if (sourceType === "none") {
+      await applyAmateurBand(band.id, { restart: false, preserveMode: true });
+      await connectRadio({ view: "amateur", applicationId: "amateur" });
+      await applyAmateurBand(band.id, { restart: false, preserveMode: true });
+    } else if (sourceRunning) await stopSource("Amateur Radio receiver stopped");
+    else { await applyAmateurBand(band.id, { restart: false, preserveMode: true }); await startSource(); }
+    if (currentView === "amateur") renderAmateurRadio();
+  });
+  $("amateurAudio").addEventListener("click", async () => { await handleAudioButton(); if (currentView === "amateur") renderAmateurRadio(); });
+  $("amateurMute").addEventListener("click", () => { toggleMute(); renderAmateurRadio(); });
+  $("amateurSave").addEventListener("click", saveCurrentStation);
+  $("amateurReceiver").addEventListener("click", () => navigate("receiver"));
+}
+
+
+function ensureScanner() {
+  if (scanner) return scanner;
+  scanner = new ScannerController({ tune: scannerTune, readLevel: () => Number(sourceStats.levelDbfs) });
+  scanner.addEventListener("hit", (event) => { log.info("Scanner signal threshold crossed", event.detail); renderScannerLive(); });
+  scanner.addEventListener("state", () => renderScannerLive());
+  return scanner;
+}
+
+function scannerConfigFromUi() {
+  return {
+    startHz: Number($("scanStart")?.value) * 1e6,
+    endHz: Number($("scanEnd")?.value) * 1e6,
+    stepHz: Number($("scanStep")?.value),
+    dwellMs: Number($("scanDwell")?.value),
+    thresholdDbfs: Number($("scanThreshold")?.value),
+    holdOnHit: Boolean($("scanHold")?.checked),
+    holdMs: Number(currentSettings().scannerHoldMs || 900),
+    settleMs: Math.min(100, Math.max(20, Math.round(Number($("scanDwell")?.value) * .35)))
+  };
+}
+
+function renderScanner() {
+  const settings = currentSettings();
+  const scan = ensureScanner();
+  staticView(`<section class="view scanner-view">
+    ${pageHeading("FREQUENCY SCANNER", "Scan a range for activity", "Serialized tuning prevents overlapping hardware commands. Signal hits are local evidence based on the current receive level; the scanner never transmits.", `<button id="scannerReceiver" class="secondary-button" type="button">Open Receiver</button>`)}
+    <div class="grid two"><article class="card"><span class="eyebrow">SCAN PLAN</span><div class="grid two compact-grid"><div class="form-row"><label for="scanStart">Start</label><div class="input-group"><input id="scanStart" type="number" min="0" step="0.001" value="${(settings.scannerStartHz / 1e6).toFixed(3)}"><span class="unit">MHz</span></div></div><div class="form-row"><label for="scanEnd">End</label><div class="input-group"><input id="scanEnd" type="number" min="0" step="0.001" value="${(settings.scannerEndHz / 1e6).toFixed(3)}"><span class="unit">MHz</span></div></div><div class="form-row"><label for="scanStep">Step</label><select id="scanStep"><option value="12500">12.5 kHz</option><option value="25000">25 kHz</option><option value="100000">100 kHz</option><option value="200000">200 kHz</option><option value="1000000">1 MHz</option></select></div><div class="form-row"><label for="scanDwell">Dwell</label><div class="input-group"><input id="scanDwell" type="number" min="20" max="10000" step="10" value="${settings.scannerDwellMs}"><span class="unit">ms</span></div></div><div class="form-row"><label for="scanThreshold">Signal threshold</label><div class="input-group"><input id="scanThreshold" type="number" min="-140" max="0" step="1" value="${settings.scannerThresholdDbfs}"><span class="unit">dBFS</span></div></div><label class="check-row"><input id="scanHold" type="checkbox" ${settings.scannerHoldOnHit ? "checked" : ""}> Hold briefly on detected activity</label></div><div class="card-actions"><button id="scanStartButton" class="primary-button" type="button" ${!sourceRunning ? "disabled" : ""}>${scan.running ? "Scanning…" : "Start Scan"}</button><button id="scanStopButton" class="secondary-button" type="button" ${!scan.running ? "disabled" : ""}>Stop</button><button id="scanClearButton" class="secondary-button" type="button">Clear Hits</button><button id="scanExportButton" class="secondary-button" type="button">Export Hits CSV</button><button id="scanClearLockouts" class="secondary-button" type="button">Clear Lockouts</button></div><div id="scanStatus" class="notice-box"></div></article><article class="card"><span class="eyebrow">LIVE SOURCE</span><h2>${sourceRunning ? "Receiver active" : "Start the receiver first"}</h2><p>${sourceRunning ? `${selectedSourceLabel()} · ${formatRate(effectiveActual().sampleRate)} · level ${Number.isFinite(sourceStats.levelDbfs) ? sourceStats.levelDbfs.toFixed(1) + " dBFS" : "—"}` : "The scanner only changes frequency after a live or simulated source is actively producing samples."}</p>${!sourceRunning ? `<button id="scannerStartReceiver" class="primary-button" type="button" ${sourceType === "none" ? "disabled" : ""}>Start Receiver</button>` : ""}</article></div>
+    <article class="card"><div class="card-title-row"><div><span class="eyebrow">DISCOVERIES</span><h2>Threshold crossings</h2></div><span id="scanHitCount" class="badge">0 hits</span></div><div id="scanHits"></div></article>
+  </section>`);
+  $("scanStep").value = String(settings.scannerStepHz);
+  $("scanStartButton").addEventListener("click", startScannerFromView);
+  $("scanStopButton").addEventListener("click", stopScannerFromView);
+  $("scanClearButton").addEventListener("click", () => scan.clearHits());
+  $("scanExportButton").addEventListener("click", exportScannerHits);
+  $("scanClearLockouts").addEventListener("click", () => scan.clearLockouts());
+  $("scannerReceiver").addEventListener("click", () => navigate("receiver"));
+  $("scannerStartReceiver")?.addEventListener("click", async () => { await startSource(); renderScanner(); });
+  renderScannerLive();
+}
+
+async function startScannerFromView() {
+  if (!sourceRunning) return;
+  const config = scannerConfigFromUi();
+  projectStore.update((project) => {
+    project.settings.scannerStartHz = config.startHz; project.settings.scannerEndHz = config.endHz; project.settings.scannerStepHz = config.stepHz;
+    project.settings.scannerDwellMs = config.dwellMs; project.settings.scannerThresholdDbfs = config.thresholdDbfs; project.settings.scannerHoldOnHit = config.holdOnHit;
+  });
+  activeApplicationId = "scanner";
+  syncAudioProcessing();
+  ensureScanner().start(config).catch((error) => presentError("Scanner stopped with an error", error, { receivingStopped: false }));
+  renderScannerLive();
+}
+
+function stopScannerFromView() {
+  scanner?.stop();
+  const current = sourceType === "live" ? radio.actual.frequencyHz : scanner?.currentFrequencyHz;
+  if (Number.isFinite(current)) projectStore.update((project) => { project.settings.centerFrequencyHz = current; });
+  renderScannerLive();
+}
+
+function renderScannerLive() {
+  if (currentView !== "scanner" || !$("scanHits")) return;
+  const snapshot = ensureScanner().snapshot();
+  if ($("scanStatus")) {
+    $("scanStatus").className = `notice-box ${snapshot.running ? "success" : ""}`;
+    $("scanStatus").innerHTML = `<strong>${snapshot.running ? "Scanning" : "Scanner idle"}</strong><p>${snapshot.currentFrequencyHz ? formatFrequency(snapshot.currentFrequencyHz, 4) : "No scan frequency yet"}${snapshot.config ? ` · threshold ${snapshot.config.thresholdDbfs} dBFS` : ""}</p>`;
+  }
+  if ($("scanStartButton")) { $("scanStartButton").disabled = !sourceRunning || snapshot.running; $("scanStartButton").textContent = snapshot.running ? "Scanning…" : "Start Scan"; }
+  if ($("scanStopButton")) $("scanStopButton").disabled = !snapshot.running;
+  $("scanHitCount").textContent = `${snapshot.hits.length} hit${snapshot.hits.length === 1 ? "" : "s"}`;
+  const host = $("scanHits"); clear(host);
+  if (!snapshot.hits.length) { host.append(emptyState("No activity recorded", "Hits appear when the measured receive level crosses the configured threshold during a dwell.")); return; }
+  const wrap = node("div", { class: "table-wrap" }); const table = node("table"); table.append(node("thead", {}, node("tr", {}, ...["Frequency", "Level", "Count", "Last seen", "Actions"].map((text) => node("th", { text })) )));
+  const body = node("tbody");
+  for (const hit of snapshot.hits) {
+    const actions = node("td");
+    actions.append(node("button", { class: "small-button", type: "button", text: "Tune", onclick: async () => { stopScannerFromView(); await tuneTo(hit.frequencyHz); navigate("receiver"); } }), " ", node("button", { class: "small-button", type: "button", text: "Save", onclick: async () => { stopScannerFromView(); await tuneTo(hit.frequencyHz); saveCurrentStation(); } }), " ", node("button", { class: "small-button", type: "button", text: snapshot.lockouts.includes(Math.round(hit.frequencyHz)) ? "Locked" : "Lockout", onclick: () => ensureScanner().lockout(hit.frequencyHz) }));
+    body.append(node("tr", {}, node("td", { text: formatFrequency(hit.frequencyHz, 4) }), node("td", { text: `${hit.levelDbfs.toFixed(1)} dBFS` }), node("td", { text: String(hit.count) }), node("td", { text: formatDateTime(hit.lastSeenAt) }), actions));
+  }
+  table.append(body); wrap.append(table); host.append(wrap);
+}
+
+function exportScannerHits() {
+  const hits = ensureScanner().snapshot().hits;
+  const lines = [["frequency_hz", "frequency_mhz", "level_dbfs", "count", "first_seen", "last_seen"], ...hits.map((hit) => [hit.frequencyHz, (hit.frequencyHz / 1e6).toFixed(6), hit.levelDbfs.toFixed(2), hit.count, hit.firstSeenAt, hit.lastSeenAt])];
+  downloadBlob(new Blob([lines.map((row) => row.map(escapeCsv).join(",")).join("\n") + "\n"], { type: "text/csv" }), `mayhem-rtl-scan-${Date.now()}.csv`);
+}
+
+function handleAdsbFrame(frame) {
+  if (!frame?.valid) return;
+  adsbFrameCount += 1;
+  adsbRecentFrames.unshift(frame);
+  adsbRecentFrames = adsbRecentFrames.slice(0, 100);
+  if (frame.aircraft?.icao) adsbAircraft.set(frame.aircraft.icao, { ...(adsbAircraft.get(frame.aircraft.icao) || {}), ...frame.aircraft });
+  if (currentView === "adsb") renderAdsbResults();
+}
+
+async function prepareAdsbReceiver() {
+  activeApplicationId = "adsbrx";
+  disableAudio();
+  const wasRunning = sourceRunning;
+  if (wasRunning) await stopSource("Configuring ADS-B receiver");
+  projectStore.update((project) => { project.settings.directSampling = "off"; project.settings.sampleRate = 2_400_000; project.settings.centerFrequencyHz = 1_090_000_000; });
+  if (sourceType === "none") {
+    syncAudioProcessing({ resetAudio: true });
+    await connectRadio({ view: "adsb", applicationId: "adsbrx" });
+    return;
+  }
+  if (sourceType === "live" && radio.device) {
+    if (radio.actual.directSampling !== 0) await radio.setDirectSampling("off");
+    const actualRate = await radio.setSampleRate(2_400_000);
+    projectStore.update((project) => { project.settings.sampleRate = actualRate; });
+    await tuneTo(1_090_000_000);
+  } else if (sourceType === "simulation") {
+    simulation.configure({ sampleRate: 2_400_000, centerFrequencyHz: 1_090_000_000, scenario: "adsb" });
+  }
+  syncAudioProcessing({ resetAudio: true });
+  if (wasRunning) await startSource();
+  updateGlobalStatus();
+  if (currentView === "adsb") renderAdsb();
+}
+
+function renderAdsb() {
+  activeApplicationId = "adsbrx";
+  syncAudioProcessing();
+  staticView(`<section class="view adsb-view">
+    ${pageHeading("ADS-B", "Automatic Dependent Surveillance–Broadcast", "Decode local 1090 MHz DF17/DF18 extended-squitter frames. Aircraft data stays in this browser; the plot is a coordinate graticule with no map-tile requests.", `<button id="adsbConfigure" class="primary-button" type="button">Configure 1090 MHz / 2.4 Msps</button><button id="adsbExport" class="secondary-button" type="button">Export Aircraft JSON</button><button id="adsbClear" class="secondary-button" type="button">Clear Aircraft</button>`)}
+    <div class="grid four" id="adsbMetrics"></div>
+    <div class="grid two adsb-main"><article class="card"><span class="eyebrow">LOCAL GRATICULE</span><canvas id="adsbGraticule" class="adsb-graticule" width="900" height="420" aria-label="Local coordinate graticule of decoded aircraft positions"></canvas><div class="field-help">Position appears after a compatible even/odd airborne Compact Position Reporting pair is received.</div></article><article class="card"><span class="eyebrow">RECEIVER</span><h2>1090 MHz extended squitter</h2><dl class="definition-list"><div><dt>Center</dt><dd>${formatFrequency(effectiveActual().frequencyHz, 3)}</dd></div><div><dt>Rate</dt><dd>${formatRate(effectiveActual().sampleRate)}</dd></div><div><dt>Decoder</dt><dd>${sourceRunning ? "active in processing worker" : "armed; receiver stopped"}</dd></div><div><dt>Network</dt><dd>no aircraft uploads or map tiles</dd></div></dl><div class="card-actions"><button id="adsbStartStop" class="${sourceRunning ? "secondary-button" : "primary-button"}" type="button" ${sourceType === "none" ? "disabled" : ""}>${sourceRunning ? "Stop Receiver" : "Start Receiver"}</button></div></article></div>
+    <article class="card"><div class="card-title-row"><div><span class="eyebrow">AIRCRAFT</span><h2>Decoded targets</h2></div><span id="adsbCount" class="badge">0 aircraft</span></div><div id="adsbTable"></div></article>
+    <article class="card"><span class="eyebrow">RECENT FRAMES</span><div id="adsbFrames" class="packet-list"></div></article>
+  </section>`);
+  $("adsbConfigure").addEventListener("click", prepareAdsbReceiver);
+  $("adsbExport").addEventListener("click", exportAdsbAircraft);
+  $("adsbClear").addEventListener("click", () => { adsbAircraft.clear(); adsbRecentFrames = []; adsbFrameCount = 0; renderAdsbResults(); });
+  $("adsbStartStop").addEventListener("click", async () => { if (sourceRunning) await stopSource("ADS-B receiver stopped"); else await startSource(); renderAdsb(); });
+  renderAdsbResults();
+}
+
+function exportAdsbAircraft() {
+  const aircraft = [...adsbAircraft.values()].map((entry) => ({ ...entry }));
+  const payload = { application: APP_NAME, version: APP_VERSION, upstreamCommit: UPSTREAM_COMMIT, generatedAt: new Date().toISOString(), centerFrequencyHz: effectiveActual().frequencyHz, sampleRate: effectiveActual().sampleRate, validFrames: adsbFrameCount, aircraft };
+  downloadBlob(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }), `mayhem-rtl-adsb-${Date.now()}.json`);
+}
+
+function renderAdsbResults() {
+  if (currentView !== "adsb" || !$("adsbTable")) return;
+  const aircraft = [...adsbAircraft.values()].sort((a, b) => Date.parse(b.lastSeenAt || 0) - Date.parse(a.lastSeenAt || 0));
+  const positioned = aircraft.filter((entry) => Number.isFinite(entry.latitude) && Number.isFinite(entry.longitude));
+  const metrics = $("adsbMetrics"); clear(metrics); metrics.append(metricCard("Valid frames", String(adsbFrameCount)), metricCard("Aircraft", String(aircraft.length)), metricCard("Positioned", String(positioned.length)), metricCard("Last frame", adsbRecentFrames[0] ? new Date(adsbRecentFrames[0].receivedAtMs).toLocaleTimeString() : "—"));
+  $("adsbCount").textContent = `${aircraft.length} aircraft`;
+  const host = $("adsbTable"); clear(host);
+  if (!aircraft.length) host.append(emptyState("No valid ADS-B frames yet", "Use Configure 1090 MHz / 2.4 Msps, start the receiver, and connect an antenna suitable for 1090 MHz."));
+  else {
+    const wrap = node("div", { class: "table-wrap" }); const table = node("table"); table.append(node("thead", {}, node("tr", {}, ...["ICAO", "Callsign", "Altitude", "Speed", "Heading", "Position", "Frames", "Last seen"].map((text) => node("th", { text })) ))); const body = node("tbody");
+    for (const item of aircraft) body.append(node("tr", {}, node("td", { text: item.icao || "—" }), node("td", { text: item.callsign || "—" }), node("td", { text: Number.isFinite(item.altitudeFeet) ? `${Math.round(item.altitudeFeet).toLocaleString()} ft` : "—" }), node("td", { text: Number.isFinite(item.speedKnots) ? `${item.speedKnots} kt` : "—" }), node("td", { text: Number.isFinite(item.headingDegrees) ? `${item.headingDegrees}°` : "—" }), node("td", { text: Number.isFinite(item.latitude) ? `${item.latitude.toFixed(4)}, ${item.longitude.toFixed(4)}` : "—" }), node("td", { text: String(item.frames || 0) }), node("td", { text: item.lastSeenAt ? formatDateTime(item.lastSeenAt) : "—" })));
+    table.append(body); wrap.append(table); host.append(wrap);
+  }
+  const frames = $("adsbFrames"); clear(frames); for (const frame of adsbRecentFrames.slice(0, 12)) frames.append(node("div", { class: "packet-row" }, node("code", { text: frame.rawHex }), node("span", { text: `${frame.icao} · TC ${frame.typeCode}${frame.callsign ? ` · ${frame.callsign}` : ""}${Number.isFinite(frame.altitudeFeet) ? ` · ${frame.altitudeFeet} ft` : ""}` })));
+  drawAdsbGraticule(positioned);
+}
+
+function drawAdsbGraticule(aircraft) {
+  const canvas = $("adsbGraticule"); if (!canvas) return; const ctx = canvas.getContext("2d"); const { width, height } = canvas; ctx.clearRect(0, 0, width, height); ctx.fillStyle = "#070b08"; ctx.fillRect(0, 0, width, height); ctx.strokeStyle = "#26342a"; ctx.lineWidth = 1; ctx.font = "11px monospace"; ctx.fillStyle = "#77857a";
+  for (let lon = -180; lon <= 180; lon += 30) { const x = (lon + 180) / 360 * width; ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke(); if (lon < 180) ctx.fillText(`${lon}°`, x + 3, height - 5); }
+  for (let lat = -90; lat <= 90; lat += 30) { const y = (90 - lat) / 180 * height; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke(); if (lat < 90) ctx.fillText(`${lat}°`, 4, Math.max(12, y - 3)); }
+  ctx.fillStyle = "#d7ff3f"; for (const item of aircraft) { const x = (item.longitude + 180) / 360 * width; const y = (90 - item.latitude) / 180 * height; ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill(); ctx.fillText(item.callsign || item.icao, x + 7, y - 7); }
 }
 
 function renderCompatibility() {
@@ -941,7 +1486,7 @@ async function renderDiagnostics() {
     diagnosticCard("Stream", streamDefinition(activeStreamStats())),
     diagnosticCard("Performance", { "Requested profile": currentSettings().performanceProfile, "Runtime plan": runtimeStreamPlan.profile, "Sample handoff": processingStats.transportMode, "Shared memory eligible": String(crossOriginIsolated && typeof SharedArrayBuffer === "function"), "Block samples": String(runtimeStreamPlan.blockSamples), "USB transfer depth": String(runtimeStreamPlan.transferDepth), "Processing queue": `${processingStats.pending} / ${processingStats.capacity}`, "Shared pool high-water": processingStats.sharedPool ? `${processingStats.sharedPool.highWater} / ${processingStats.sharedPool.slots}` : "not active", Governor: performanceLabel(processingStats.governorLevel), "Display ceiling": `${processingStats.displayRateHz} Hz`, "Spectrum stride": String(processingStats.spectrumStride), "Spectrum blocks": String(processingStats.spectrumBlocks) }),
     diagnosticCard("Hardware verification", { Status: HARDWARE_VERIFICATION.label, Source: HARDWARE_VERIFICATION.source, Observed: HARDWARE_VERIFICATION.observedAt, Device: HARDWARE_VERIFICATION.deviceProduct, Tuner: HARDWARE_VERIFICATION.tunerFamily, "Observed rate": formatRate(HARDWARE_VERIFICATION.sampleRate), "Observed drops": String(HARDWARE_VERIFICATION.observedDroppedSamples), "Verified now": liveVerificationPresentation().label, Pending: HARDWARE_VERIFICATION.pendingChecks.join("; ") }),
-    diagnosticCard("Audio", { State: audio.state, Enabled: String(audio.enabled), Mode: currentSettings().modulation.toUpperCase(), "Output rate": formatRate(audio.snapshot().sampleRate || currentSettings().audioOutputRate), Volume: `${Math.round(currentSettings().volume * 100)}%`, Mute: String(currentSettings().mute), Squelch: `${currentSettings().squelchDb} dBFS`, "Squelch open": String(audioStats.squelchOpen), Underruns: String(audioStats.underruns || 0), "Audio level": Number.isFinite(audioStats.levelRms) ? audioStats.levelRms.toFixed(4) : "—" }),
+    diagnosticCard("Audio", { State: audio.state, Enabled: String(audio.enabled), Mode: currentSettings().modulation.toUpperCase(), "Output rate": formatRate(audio.snapshot().sampleRate || currentSettings().audioOutputRate), Volume: `${Math.round(currentSettings().volume * 100)}%`, Mute: String(currentSettings().mute), Squelch: `${currentSettings().squelchDb} dBFS`, "Squelch open": String(audioStats.squelchOpen), Buffering: String(Boolean(audioStats.buffering)), "Queued audio": `${Number(audioStats.queuedMs || 0).toFixed(0)} ms`, "Rebuffer events": String(audioStats.underruns || 0), "Frames pushed": String(audioStats.pushedFrames || 0), "Samples pushed": String(audioStats.pushedSamples || 0), "Worklet drops": String(audioStats.droppedInputSamples || 0), "Push errors": String(audioStats.pushErrors || 0), "Audio level": Number.isFinite(audioStats.levelRms) ? audioStats.levelRms.toFixed(4) : "—", RIT: `${currentSettings().ritHz || 0} Hz`, "SSB low cut": `${currentSettings().ssbLowCutHz || 0} Hz`, "CW pitch": `${currentSettings().cwPitchHz || 0} Hz`, AGC: currentSettings().agcMode }),
     diagnosticCard("Application", { Active: APPLICATIONS.find((entry) => entry.id === activeApplicationId)?.name || activeApplicationId, "Port state": APPLICATIONS.find((entry) => entry.id === activeApplicationId)?.portState || "—", Verification: APPLICATIONS.find((entry) => entry.id === activeApplicationId)?.verificationState || "—", "Worker time": processingStats.workerTimeMs == null ? "—" : `${processingStats.workerTimeMs.toFixed(2)} ms`, "Source latency": processingStats.sourceLatencyMs == null ? "—" : `${processingStats.sourceLatencyMs.toFixed(2)} ms`, "Worker sequence gaps": String(processingStats.sequenceGaps), "Capture backlog": String(captureStore?.activeStatus?.backlog ?? 0), "Last error": log.toJSON().filter((entry) => entry.level === "error").at(-1)?.message || "none" })
   );
   $("diagnosticLog").textContent = log.toText() || "No diagnostic events recorded.";
@@ -1010,13 +1555,13 @@ function renderHelp() {
 function renderInspector() {
   if (currentView === "receiver") renderReceiverInspector();
   else if (currentView === "diagnostics") renderDiagnosticsInspector();
-  else if (currentView === "applications" || currentView === "compatibility") renderApplicationInspector();
+  else if (["applications", "compatibility", "broadcast", "amateur", "scanner", "adsb"].includes(currentView)) renderApplicationInspector();
   else renderStartInspector();
 }
 
 function renderStartInspector() {
   staticInspector("Start", `<section class="inspector-section"><h3>Source</h3><button id="inspectConnect" class="primary-button" type="button">Connect RTL-SDR</button><button id="inspectSimulation" class="secondary-button" type="button">Simulation Mode</button></section><section class="inspector-section"><h3>Build status</h3><dl class="definition-list"><div><dt>Version</dt><dd>${APP_VERSION}</dd></div><div><dt>Upstream</dt><dd>44736b9c</dd></div><div><dt>Radio</dt><dd>receive only</dd></div><div><dt>Network</dt><dd>same origin only</dd></div></dl></section>`);
-  $("inspectConnect").addEventListener("click", connectRadio);
+  $("inspectConnect").addEventListener("click", () => connectRadio());
   $("inspectSimulation").addEventListener("click", () => enterSimulation());
 }
 
@@ -1025,11 +1570,11 @@ function renderReceiverInspector() {
   const replayLocked = sourceType === "replay";
   staticInspector("Receiver", `<section class="inspector-section"><h3>Frequency</h3><div class="form-row"><label for="frequencyInput">Center frequency</label><div class="input-group"><input id="frequencyInput" type="number" min="0" step="0.001" value="${(effectiveActual().frequencyHz / 1e6).toFixed(6)}" ${replayLocked ? "disabled" : ""}><span class="unit">MHz</span></div></div><div class="form-row"><label for="tuningStep">Tuning step</label><select id="tuningStep"><option value="100">100 Hz</option><option value="1000">1 kHz</option><option value="5000">5 kHz</option><option value="12500">12.5 kHz</option><option value="25000">25 kHz</option><option value="100000">100 kHz</option></select></div></section>
   <section class="inspector-section"><h3>Receiver</h3><div class="form-row"><label for="sampleRate">Sample rate</label><select id="sampleRate" ${replayLocked ? "disabled" : ""}><option value="1024000">1.024 Msps</option><option value="1200000">1.2 Msps</option><option value="1800000">1.8 Msps</option><option value="2048000">2.048 Msps</option><option value="2400000">2.4 Msps</option></select></div><div class="form-row"><label for="gainMode">Gain</label><select id="gainMode" ${sourceType !== "live" ? "disabled" : ""}><option value="automatic">Automatic</option><option value="manual">Manual</option></select></div><div class="form-row"><label for="gainDb">Manual gain</label><div class="input-group"><input id="gainDb" type="range" min="0" max="49.6" step="0.1" value="${settings.gainDb}" ${sourceType !== "live" || settings.gainMode === "automatic" ? "disabled" : ""}><span id="gainReadout" class="unit">${settings.gainDb.toFixed(1)} dB</span></div></div></section>
-  <section class="inspector-section"><h3>Audio</h3><div class="form-row"><label for="inspectorModulation">Demodulation</label><select id="inspectorModulation"><option value="wfm">Wideband Frequency Modulation (WFM)</option><option value="nfm">Narrowband Frequency Modulation (NFM)</option><option value="am">Amplitude Modulation (AM)</option></select></div><div class="inline-actions"><button id="inspectorAudioEnable" class="primary-button" type="button">Enable Audio</button><button id="inspectorMute" class="secondary-button" type="button">Mute</button></div><div class="form-row"><label for="inspectorVolume">Volume <span id="inspectorVolumeReadout">${Math.round(settings.volume * 100)}%</span></label><input id="inspectorVolume" type="range" min="0" max="1" step="0.01" value="${settings.volume}"></div><div class="form-row"><label for="inspectorSquelch">Squelch <span id="inspectorSquelchReadout">${settings.squelchDb.toFixed(0)} dBFS</span></label><input id="inspectorSquelch" type="range" min="-100" max="-5" step="1" value="${settings.squelchDb}"></div><div id="inspectorAudioStatus" class="field-help">Audio off</div></section>
+  <section class="inspector-section"><h3>Audio</h3><div class="form-row"><label for="inspectorModulation">Demodulation</label><select id="inspectorModulation"><option value="wfm">Wideband Frequency Modulation (WFM)</option><option value="nfm">Narrowband Frequency Modulation (NFM)</option><option value="am">Amplitude Modulation (AM)</option><option value="usb">Upper Sideband (USB)</option><option value="lsb">Lower Sideband (LSB)</option><option value="cw">Continuous Wave (CW)</option></select></div><div class="inline-actions"><button id="inspectorAudioEnable" class="primary-button" type="button">Enable Audio</button><button id="inspectorMute" class="secondary-button" type="button">Mute</button></div><div class="form-row"><label for="inspectorVolume">Volume <span id="inspectorVolumeReadout">${Math.round(settings.volume * 100)}%</span></label><input id="inspectorVolume" type="range" min="0" max="1" step="0.01" value="${settings.volume}"></div><div class="form-row"><label for="inspectorSquelch">Squelch <span id="inspectorSquelchReadout">${settings.squelchDb.toFixed(0)} dBFS</span></label><input id="inspectorSquelch" type="range" min="-140" max="-5" step="1" value="${settings.squelchDb}"></div><div id="inspectorAudioStatus" class="field-help">Audio off</div></section>
   <section class="inspector-section"><h3>Display</h3><div class="switch-row"><div><strong>Peak hold</strong></div><label class="switch"><input id="peakHold" type="checkbox" ${settings.peakHold ? "checked" : ""}><span></span></label></div><div class="form-row"><label for="spanInput">Visible span</label><input id="spanInput" type="range" min="10000" max="${Math.max(10000, effectiveActual().sampleRate)}" step="10000" value="${settings.spanHz}"><div id="spanReadout" class="field-help">${formatRate(settings.spanHz)}</div></div></section>
   <section class="inspector-section"><h3>Capture</h3><button id="inspectorCapture" class="${captureStore?.activeStatus ? "danger-button" : "secondary-button"}" type="button" ${!sourceRunning || !captureStore ? "disabled" : ""}>${captureStore?.activeStatus ? "Stop Capture" : "Start Capture"}</button><div id="captureInspectorStatus" class="field-help">${captureStore?.activeStatus ? `${formatBytes(captureStore.activeStatus.bytes)} written; ${captureStore.activeStatus.backlog} queued` : "No active capture"}</div></section>
   <div class="advanced-status"><section class="inspector-section"><h3>Advanced radio</h3><div class="form-row"><label for="ppmInput">Frequency correction</label><div class="input-group"><input id="ppmInput" type="number" min="-200" max="200" step="0.1" value="${settings.ppm}" ${sourceType === "replay" ? "disabled" : ""}><span class="unit">ppm</span></div></div><div class="form-row"><label for="directSampling">Direct sampling</label><select id="directSampling" ${sourceType !== "live" ? "disabled" : ""}><option value="off">Off</option><option value="i">I channel</option><option value="q">Q channel</option></select></div><div class="switch-row"><div><strong>Bias tee</strong><div class="field-help">Power on antenna connector</div></div><label class="switch"><input id="biasTee" type="checkbox" ${radio.actual.biasTee ? "checked" : ""} ${sourceType !== "live" || !radio.caps.biasTee ? "disabled" : ""}><span></span></label></div></section>
-  <section class="inspector-section"><h3>Advanced audio</h3><div class="form-row"><label for="audioBandwidth">Audio low-pass bandwidth</label><div class="input-group"><input id="audioBandwidth" type="number" min="1000" max="18000" step="500" value="${settings.audioBandwidthHz}"><span class="unit">Hz</span></div></div><div class="form-row"><label for="deemphasisUs">WFM de-emphasis</label><select id="deemphasisUs"><option value="75">75 µs</option><option value="50">50 µs</option></select></div><div class="field-help">Audio is demodulated in the processing worker and delivered to a bounded AudioWorklet ring. Playback never runs in the spectrum render loop.</div></section>
+  <section class="inspector-section"><h3>Advanced audio</h3><div class="form-row"><label for="audioBandwidth">Receive audio bandwidth</label><div class="input-group"><input id="audioBandwidth" type="number" min="100" max="18000" step="100" value="${settings.audioBandwidthHz}"><span class="unit">Hz</span></div></div><div class="form-row"><label for="ssbLowCut">SSB low cut</label><div class="input-group"><input id="ssbLowCut" type="number" min="0" max="2000" step="50" value="${settings.ssbLowCutHz}"><span class="unit">Hz</span></div></div><div class="form-row"><label for="ritHz">Receiver Incremental Tuning (RIT)</label><div class="input-group"><input id="ritHz" type="number" min="-10000" max="10000" step="10" value="${settings.ritHz}"><span class="unit">Hz</span></div></div><div class="form-row"><label for="cwPitchHz">CW beat pitch</label><div class="input-group"><input id="cwPitchHz" type="number" min="200" max="1500" step="10" value="${settings.cwPitchHz}"><span class="unit">Hz</span></div></div><div class="form-row"><label for="agcMode">Audio AGC</label><select id="agcMode"><option value="off">Off</option><option value="fast">Fast</option><option value="medium">Medium</option><option value="slow">Slow</option></select></div><div class="form-row"><label for="deemphasisUs">WFM de-emphasis</label><select id="deemphasisUs"><option value="75">75 µs</option><option value="50">50 µs</option></select></div><div class="field-help">USB/LSB use complex sideband filtering in the processing worker. CW adds an adjustable local beat oscillator. Playback still uses the bounded AudioWorklet ring.</div></section>
   <section class="inspector-section"><h3>Advanced processing</h3><div class="form-row"><label for="fftSize">Fast Fourier Transform size</label><select id="fftSize"><option value="512">512</option><option value="1024">1024</option><option value="2048">2048</option><option value="4096">4096</option></select></div><div class="form-row"><label for="fftWindow">Window</label><select id="fftWindow"><option value="hann">Hann</option><option value="hamming">Hamming</option><option value="blackman">Blackman</option><option value="rectangular">Rectangular</option></select></div><div class="form-row"><label for="averaging">Averaging</label><input id="averaging" type="range" min="0" max="0.95" step="0.05" value="${settings.averaging}"></div><div class="form-row"><label for="referenceLevel">Reference level</label><div class="input-group"><input id="referenceLevel" type="number" min="-40" max="20" value="${settings.referenceLevelDb}"><span class="unit">dBFS</span></div></div><div class="form-row"><label for="dynamicRange">Dynamic range</label><div class="input-group"><input id="dynamicRange" type="number" min="20" max="160" value="${settings.dynamicRangeDb}"><span class="unit">dB</span></div></div></section>
   <section class="inspector-section"><h3>Advanced performance</h3><div class="form-row"><label for="performanceProfile">Streaming profile</label><select id="performanceProfile" ${sourceRunning ? "disabled" : ""}><option value="auto">Automatic</option><option value="compatibility">Compatibility</option><option value="high-rate">High-rate</option><option value="custom">Custom</option></select></div><dl class="definition-list"><div><dt>Runtime plan</dt><dd>${runtimeStreamPlan.profile}</dd></div><div><dt>Sample handoff</dt><dd>${processingStats.transportMode}</dd></div><div><dt>Governor</dt><dd>${performanceLabel(processingStats.governorLevel)}</dd></div></dl><div class="field-help">Automatic mode selects conservative, balanced, or high-rate transfer settings from the actual sample rate. Under load, visualization is reduced before radio or audio processing.</div></section>
   <section class="inspector-section"><h3>Advanced transport</h3><div class="form-row"><label for="blockSamples">USB block samples</label><input id="blockSamples" type="number" min="8192" max="65536" step="1024" value="${settings.usbBlockSamples}" ${sourceRunning || settings.performanceProfile !== "custom" ? "disabled" : ""}></div><div class="form-row"><label for="transferDepth">Queued transfer depth</label><input id="transferDepth" type="number" min="1" max="8" step="1" value="${settings.transferDepth}" ${sourceRunning || settings.performanceProfile !== "custom" ? "disabled" : ""}></div><div class="form-row"><label for="processingQueueDepth">Processing queue depth</label><input id="processingQueueDepth" type="number" min="2" max="8" step="1" value="${settings.processingQueueDepth}" ${sourceRunning || settings.performanceProfile !== "custom" ? "disabled" : ""}></div><div class="form-row"><label for="displayRateHz">Maximum display updates</label><div class="input-group"><input id="displayRateHz" type="number" min="8" max="60" step="1" value="${settings.displayRateHz}" ${sourceRunning || settings.performanceProfile !== "custom" ? "disabled" : ""}><span class="unit">Hz</span></div></div><div class="field-help">Custom values apply on the next receiver start. The adaptive governor may temporarily reduce spectrum work when processing pressure rises.</div></section></div>`);
@@ -1064,7 +1609,12 @@ function bindInspectorControls() {
   $("ppmInput").addEventListener("change", (event) => updateSetting("ppm", Number(event.target.value)));
   $("directSampling").addEventListener("change", (event) => updateSetting("directSampling", event.target.value));
   $("biasTee").addEventListener("change", (event) => event.target.checked ? confirmBiasTee() : updateSetting("biasTee", false));
-  $("audioBandwidth").addEventListener("change", (event) => { const value = Math.max(1000, Math.min(18000, Number(event.target.value))); projectStore.update((project) => { project.settings.audioBandwidthHz = value; }); processing?.updateSettings({ audioBandwidthHz: value }, false, true); });
+  $("audioBandwidth").addEventListener("change", (event) => { const value = Math.max(100, Math.min(18000, Number(event.target.value))); projectStore.update((project) => { project.settings.audioBandwidthHz = value; }); processing?.updateSettings({ audioBandwidthHz: value }, false, true); });
+  $("ssbLowCut").addEventListener("change", (event) => { const value = Math.max(0, Math.min(2000, Number(event.target.value))); projectStore.update((project) => { project.settings.ssbLowCutHz = value; }); processing?.updateSettings({ ssbLowCutHz: value }, false, true); });
+  $("ritHz").addEventListener("change", (event) => { const value = Math.max(-10000, Math.min(10000, Number(event.target.value))); projectStore.update((project) => { project.settings.ritHz = value; }); processing?.updateSettings({ ritHz: value }, false, true); });
+  $("cwPitchHz").addEventListener("change", (event) => { const value = Math.max(200, Math.min(1500, Number(event.target.value))); projectStore.update((project) => { project.settings.cwPitchHz = value; }); processing?.updateSettings({ cwPitchHz: value }, false, true); });
+  $("agcMode").value = currentSettings().agcMode;
+  $("agcMode").addEventListener("change", (event) => { projectStore.update((project) => { project.settings.agcMode = event.target.value; }); processing?.updateSettings({ agcMode: event.target.value }, false, true); });
   $("deemphasisUs").value = String(currentSettings().deemphasisUs);
   $("deemphasisUs").addEventListener("change", (event) => { const value = Number(event.target.value); projectStore.update((project) => { project.settings.deemphasisUs = value; }); processing?.updateSettings({ deemphasisUs: value }, false, true); });
   $("fftSize").addEventListener("change", (event) => updateSetting("fftSize", Number(event.target.value)));
@@ -1080,7 +1630,7 @@ function bindInspectorControls() {
 }
 
 function renderDiagnosticsInspector() {
-  staticInspector("Evidence", `<section class="inspector-section"><h3>Export privacy</h3><div class="switch-row"><div><strong>Include serial number</strong><div class="field-help">Disabled by default.</div></div><label class="switch"><input id="diagSerialToggle" type="checkbox" ${projectStore.project.diagnosticPreferences.includeSerialOnExport ? "checked" : ""}><span></span></label></div><button id="diagExportInspector" class="primary-button" type="button">Export Diagnostics</button></section><section class="inspector-section"><h3>Verification</h3><dl class="definition-list"><div><dt>Live radio</dt><dd>${HARDWARE_VERIFICATION.label}</dd></div><div><dt>Current session</dt><dd>${liveVerificationPresentation().label}</dd></div><div><dt>Simulation</dt><dd>automated fixtures</dd></div><div><dt>Replay</dt><dd>local deterministic path</dd></div></dl><div class="field-help">The v0.6 reference configuration is validated through the audio and 2.4 Msps gates; this is still not a multi-device or cross-browser compatibility matrix.</div></section>`);
+  staticInspector("Evidence", `<section class="inspector-section"><h3>Export privacy</h3><div class="switch-row"><div><strong>Include serial number</strong><div class="field-help">Disabled by default.</div></div><label class="switch"><input id="diagSerialToggle" type="checkbox" ${projectStore.project.diagnosticPreferences.includeSerialOnExport ? "checked" : ""}><span></span></label></div><button id="diagExportInspector" class="primary-button" type="button">Export Diagnostics</button></section><section class="inspector-section"><h3>Verification</h3><dl class="definition-list"><div><dt>Live radio</dt><dd>${HARDWARE_VERIFICATION.label}</dd></div><div><dt>Current session</dt><dd>${liveVerificationPresentation().label}</dd></div><div><dt>Simulation</dt><dd>automated fixtures</dd></div><div><dt>Replay</dt><dd>local deterministic path</dd></div></dl><div class="field-help">The reference receive/high-rate configuration is validated through the 2.4 Msps gate; the repaired browser-audio path still awaits a focused physical re-check, and this remains a single-device/browser reference record.</div></section>`);
   $("diagSerialToggle").addEventListener("change", (event) => projectStore.update((project) => { project.diagnosticPreferences.includeSerialOnExport = event.target.checked; }));
   $("diagExportInspector").addEventListener("click", exportDiagnostics);
 }
@@ -1134,11 +1684,12 @@ async function tuneTo(frequencyHz) {
     projectStore.update((project) => { project.settings.centerFrequencyHz = actual; });
     spectrumView?.configure({ centerFrequencyHz: actual });
     if ($("quickFrequency") && document.activeElement !== $("quickFrequency")) $("quickFrequency").value = (actual / 1e6).toFixed(6);
-  } catch (error) { presentError("Tuning failed", error, { receivingStopped: false }); }
+    return actual;
+  } catch (error) { presentError("Tuning failed", error, { receivingStopped: false }); return null; }
   finally { pendingTune = false; updateGlobalStatus(); }
 }
 
-async function connectRadio() {
+async function connectRadio({ view = "receiver", applicationId = "spectrum" } = {}) {
   if (!preflight.liveRadioEligible) {
     const failed = preflight.results.filter((entry) => entry.status === "fail");
     const body = node("div");
@@ -1155,8 +1706,9 @@ async function connectRadio() {
       project.settings.centerFrequencyHz = radio.actual.frequencyHz;
       project.settings.sampleRate = radio.actual.sampleRate;
     }, { immediate: true });
-    activeApplicationId = "spectrum";
-    navigate("receiver");
+    activeApplicationId = applicationId;
+    syncAudioProcessing();
+    navigate(view);
   } catch (error) { sourceType = "none"; presentError("RTL-SDR connection failed", error, { receivingStopped: true }); updateGlobalStatus(); }
 }
 
@@ -1261,6 +1813,11 @@ async function startCapture() {
       modulation: currentSettings().modulation,
       audioBandwidthHz: currentSettings().audioBandwidthHz,
       squelchDb: currentSettings().squelchDb,
+      ritHz: currentSettings().ritHz,
+      cwPitchHz: currentSettings().cwPitchHz,
+      ssbLowCutHz: currentSettings().ssbLowCutHz,
+      agcMode: currentSettings().agcMode,
+      directSampling: currentSettings().directSampling,
       source: sourceType,
       deviceIdentifier: sourceType === "live" ? `${radio.safeDeviceInfo(false).vendorId ?? ""}:${radio.safeDeviceInfo(false).productId ?? ""}` : sourceType,
       notes: projectStore.project.notes
@@ -1330,7 +1887,7 @@ async function applyWaitingUpdate() {
 async function registerServiceWorker() {
   if (!navigator.serviceWorker || !isSecureContext) return;
   try {
-    const registration = await navigator.serviceWorker.register("./service-worker.js", { scope: "./" });
+    const registration = await navigator.serviceWorker.register(`./service-worker.js?v=${encodeURIComponent(APP_VERSION)}`, { scope: "./", updateViaCache: "none" });
     if (registration.waiting) updateWaiting = registration.waiting;
     registration.addEventListener("updatefound", () => {
       const installing = registration.installing;
@@ -1347,7 +1904,21 @@ async function registerServiceWorker() {
 }
 
 function bindGlobalEvents() {
-  $("navButtons").addEventListener("click", (event) => { const button = event.target.closest("[data-view]"); if (button) navigate(button.dataset.view); });
+  $("navButtons").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-view]");
+    if (!button) return;
+    if (button.dataset.view === "broadcast") {
+      navigate("broadcast");
+      applyBroadcastBand(currentSettings().broadcastBand === "am" ? BroadcastBand.AM : BroadcastBand.FM, { restart: true }).catch((error) => presentError("Broadcast preset could not be applied", error, { receivingStopped: !sourceRunning }));
+      return;
+    }
+    if (button.dataset.view === "amateur") {
+      navigate("amateur");
+      applyAmateurBand(currentSettings().amateurBand, { restart: true, preserveMode: true }).catch((error) => presentError("Amateur Radio preset could not be applied", error, { receivingStopped: !sourceRunning }));
+      return;
+    }
+    navigate(button.dataset.view);
+  });
   $("leftToggle").addEventListener("click", () => {
     if (compactNavMedia.matches) { compactNavOpen = !compactNavOpen; updateGlobalStatus(); return; }
     projectStore.update((project) => { project.layout.leftOpen = !project.layout.leftOpen; }, { immediate: true });
@@ -1435,6 +2006,7 @@ function tickStatus() {
 }
 
 async function initialize() {
+  if (!await enforceRuntimeVersionConsistency()) return;
   $("versionLabel").textContent = `v${APP_VERSION}`;
   $("upstreamLabel").textContent = UPSTREAM_COMMIT.slice(0, 8);
   bindGlobalEvents();
@@ -1444,7 +2016,7 @@ async function initialize() {
   renderView(); renderInspector(); updateGlobalStatus();
   log.info("MAYHEM RTL started", { version: APP_VERSION, upstreamCommit: UPSTREAM_COMMIT, webRtlSdrCommit: WEBRTLSDR_COMMIT, preflight });
   try {
-    processing = new ProcessingClient({ workerUrl: new URL("./workers/processing-worker.js", import.meta.url), wasmUrl: new URL("../assets/dsp_core.wasm", import.meta.url), settings: currentSettings(), log, maxPendingBlocks: runtimeStreamPlan.processingQueueDepth, preferSharedMemory: true });
+    processing = new ProcessingClient({ workerUrl: new URL("./workers/processing-worker.js", import.meta.url), wasmUrl: new URL("../assets/dsp_core.wasm", import.meta.url), settings: { ...currentSettings(), ...audioProcessingSettings() }, log, maxPendingBlocks: runtimeStreamPlan.processingQueueDepth, preferSharedMemory: true });
     bindProcessing();
     const ready = await processing.waitUntilReady();
     processingStats.wasmMode = ready.wasmMode;

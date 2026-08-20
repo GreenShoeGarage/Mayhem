@@ -3,7 +3,7 @@
     "id": "spectrum",
     "coreName": "Spectrum",
     "name": "Spectrum Analyzer",
-    "icon": "∿",
+    "icon": "\u223f",
     "category": "Receive",
     "requiresReceive": true,
     "requiresTransmit": false,
@@ -22,7 +22,7 @@
     "id": "waterfall",
     "coreName": "Waterfall",
     "name": "Waterfall",
-    "icon": "≋",
+    "icon": "\u224b",
     "category": "Receive",
     "requiresReceive": true,
     "requiresTransmit": false,
@@ -51,9 +51,9 @@
     "requiresAudio": true,
     "requiresMap": false,
     "portState": "ready",
-    "verificationState": "hardware-tested",
+    "verificationState": "fixture-tested",
     "limitations": [
-      "On-air audio is user-verified on the reference RTL2838UHIDIR configuration; wider tuner/browser coverage remains pending."
+      "The demodulator has prior on-air reference-hardware history, but the browser audio-output path changed in v0.8.1 and the current repaired path still needs a focused physical re-check."
     ]
   },
   {
@@ -70,9 +70,9 @@
     "requiresAudio": true,
     "requiresMap": false,
     "portState": "ready",
-    "verificationState": "hardware-tested",
+    "verificationState": "fixture-tested",
     "limitations": [
-      "On-air audio is user-verified on the reference RTL2838UHIDIR configuration; wider tuner/browser coverage remains pending."
+      "The demodulator has prior on-air reference-hardware history, but the browser audio-output path changed in v0.8.1 and the current repaired path still needs a focused physical re-check."
     ]
   },
   {
@@ -89,16 +89,116 @@
     "requiresAudio": true,
     "requiresMap": false,
     "portState": "ready",
-    "verificationState": "hardware-tested",
+    "verificationState": "fixture-tested",
     "limitations": [
-      "On-air audio is user-verified on the reference RTL2838UHIDIR configuration; wider tuner/browser coverage remains pending."
+      "The demodulator has prior on-air reference-hardware history, but the browser audio-output path changed in v0.8.1 and the current repaired path still needs a focused physical re-check."
+    ]
+  },
+  {
+    "id": "usb",
+    "coreName": "USB",
+    "name": "Upper Sideband Receiver",
+    "icon": "U",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 3000,
+    "requiresAudio": true,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "fixture-tested",
+    "limitations": [
+      "Worker-side complex sideband selection, fine tuning, filtering and audio AGC are deterministic-fixture tested; on-air amateur-radio validation is pending.",
+      "HF reception below the normal tuner floor may require RTL2832U direct sampling or an external upconverter."
+    ]
+  },
+  {
+    "id": "lsb",
+    "coreName": "LSB",
+    "name": "Lower Sideband Receiver",
+    "icon": "L",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 3000,
+    "requiresAudio": true,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "fixture-tested",
+    "limitations": [
+      "Worker-side complex sideband selection, fine tuning, filtering and audio AGC are deterministic-fixture tested; on-air amateur-radio validation is pending.",
+      "HF reception below the normal tuner floor may require RTL2832U direct sampling or an external upconverter."
+    ]
+  },
+  {
+    "id": "cw",
+    "coreName": "CW",
+    "name": "Continuous Wave Receiver",
+    "icon": "\u00b7\u2212",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 1000,
+    "requiresAudio": true,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "fixture-tested",
+    "limitations": [
+      "Adjustable beat frequency and narrow filtering are deterministic-fixture tested; on-air CW validation is pending."
+    ]
+  },
+  {
+    "id": "amateur",
+    "coreName": "Amateur Radio",
+    "name": "Amateur Radio Receiver",
+    "icon": "\u2301",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 3000,
+    "requiresAudio": true,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "unit-tested",
+    "limitations": [
+      "Band edges and mode defaults are convenience presets, not a regulatory database or authorization to transmit.",
+      "HF presets automatically request direct sampling when the selected frequency is below the connected receiver normal tuner floor."
+    ]
+  },
+  {
+    "id": "broadcast",
+    "coreName": "Broadcast Radio",
+    "name": "Broadcast AM / FM Radio",
+    "icon": "\u266b",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 200000,
+    "requiresAudio": true,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "unit-tested",
+    "limitations": [
+      "The WFM/AM demodulators have deterministic fixtures and prior reference-hardware history; the repaired v0.8.1+ browser audio-output path and this dedicated broadcast workflow still need a focused physical re-check.",
+      "Medium-wave AM may require RTL2832U direct sampling on ordinary R8xx dongles; RTL-SDR Blog V4-class hardware can use its low-frequency input path when detected.",
+      "AM channel spacing varies by region; the preset offers 10 kHz and 9 kHz stepping."
     ]
   },
   {
     "id": "scanner",
     "coreName": "Scanner",
     "name": "Frequency Scanner",
-    "icon": "⇥",
+    "icon": "\u21e5",
     "category": "Receive",
     "requiresReceive": true,
     "requiresTransmit": false,
@@ -107,17 +207,17 @@
     "requiredBandwidthHz": 0,
     "requiresAudio": false,
     "requiresMap": false,
-    "portState": "browser port pending",
-    "verificationState": "not tested",
+    "portState": "ready",
+    "verificationState": "unit-tested",
     "limitations": [
-      "Serialized scan controller pending."
+      "Serialized tuning, threshold/hold behavior, and scan-history logic are automated-test verified; live scan review on additional bands remains operator-dependent."
     ]
   },
   {
     "id": "capture",
     "coreName": "Capture",
     "name": "Raw In-phase and Quadrature Capture",
-    "icon": "●",
+    "icon": "\u25cf",
     "category": "Receive",
     "requiresReceive": true,
     "requiresTransmit": false,
@@ -136,7 +236,7 @@
     "id": "replay",
     "coreName": "Replay",
     "name": "Raw In-phase and Quadrature Replay",
-    "icon": "▶",
+    "icon": "\u25b6",
     "category": "Utilities",
     "requiresReceive": false,
     "requiresTransmit": false,
@@ -154,8 +254,8 @@
   {
     "id": "adsbrx",
     "coreName": "ADS-B",
-    "name": "Automatic Dependent Surveillance–Broadcast Receiver",
-    "icon": "✈",
+    "name": "Automatic Dependent Surveillance\u2013Broadcast Receiver",
+    "icon": "\u2708",
     "category": "Receive",
     "requiresReceive": true,
     "requiresTransmit": false,
@@ -164,17 +264,18 @@
     "requiredBandwidthHz": 2000000,
     "requiresAudio": false,
     "requiresMap": true,
-    "portState": "browser port pending",
-    "verificationState": "not tested",
+    "portState": "ready",
+    "verificationState": "unit-tested",
     "limitations": [
-      "Decoder and local graticule panel pending; no aircraft data leaves the browser."
+      "DF17/DF18 extended-squitter CRC, identification, altitude, velocity and global airborne CPR are implemented with deterministic fixtures; on-air aircraft decoding remains to be verified.",
+      "No aircraft data leaves the browser; the graticule uses no remote map tiles."
     ]
   },
   {
     "id": "diagnostics",
     "coreName": "Diagnostics",
     "name": "Device Diagnostics",
-    "icon": "⌕",
+    "icon": "\u2315",
     "category": "Utilities",
     "requiresReceive": false,
     "requiresTransmit": false,
@@ -191,7 +292,7 @@
     "id": "radiosetup",
     "coreName": "Radio Setup",
     "name": "Radio Setup",
-    "icon": "⚙",
+    "icon": "\u2699",
     "category": "Settings",
     "requiresReceive": false,
     "requiresTransmit": false,
@@ -210,7 +311,7 @@
     "id": "compatibility",
     "coreName": "Compatibility",
     "name": "Application Compatibility Matrix",
-    "icon": "≡",
+    "icon": "\u2261",
     "category": "Utilities",
     "requiresReceive": false,
     "requiresTransmit": false,
@@ -256,7 +357,7 @@
     "portState": "ready",
     "verificationState": "simulation-tested",
     "limitations": [
-      "Always displays SIMULATION — NO LIVE RADIO."
+      "Always displays SIMULATION \u2014 NO LIVE RADIO."
     ]
   },
   {
@@ -284,7 +385,7 @@
     "id": "replaytx",
     "coreName": "Replay TX",
     "name": "Replay over Radio",
-    "icon": "↥",
+    "icon": "\u21a5",
     "category": "Transmit",
     "requiresReceive": false,
     "requiresTransmit": true,

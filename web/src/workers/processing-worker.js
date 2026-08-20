@@ -1,5 +1,6 @@
 import { spectrumDb } from "../dsp/fft.js";
 import { AudioDemodulator, recommendedAudioBandwidth, rms } from "../dsp/demodulators.js";
+import { AdsbIqDecoder } from "../dsp/adsb.js";
 
 let wasm = null;
 let wasmMode = "javascript-fallback";
@@ -18,7 +19,12 @@ let settings = {
   audioOutputRate: 48000,
   audioBandwidthHz: 15000,
   deemphasisUs: 75,
-  squelchDb: -55
+  squelchDb: -55,
+  ssbLowCutHz: 300,
+  ritHz: 0,
+  cwPitchHz: 700,
+  agcMode: "medium",
+  decoderMode: "none"
 };
 let averageSpectrum = null;
 let peakSpectrum = null;
@@ -27,7 +33,10 @@ let lastSequence = -1;
 let sequenceGaps = 0;
 let processedBlocks = 0;
 let spectrumBlocks = 0;
+let audioFramesProduced = 0;
+let audioSamplesProduced = 0;
 const audioDemodulator = new AudioDemodulator(settings);
+const adsbDecoder = new AdsbIqDecoder({ sampleRate: 2_400_000 });
 
 function align16(value) { return (value + 15) & ~15; }
 
@@ -107,19 +116,25 @@ function updateAveraging(current) {
 
 function processAudio(converted, sampleRate, levelDbfs) {
   if (!settings.audioEnabled) return;
-  const mode = ["wfm", "nfm", "am"].includes(settings.modulation) ? settings.modulation : "wfm";
+  const mode = ["wfm", "nfm", "am", "usb", "lsb", "cw"].includes(settings.modulation) ? settings.modulation : "wfm";
   audioDemodulator.configure({
     mode,
     outputRate: Number(settings.audioOutputRate) || 48000,
     audioBandwidthHz: Number(settings.audioBandwidthHz) || recommendedAudioBandwidth(mode),
-    deemphasisUs: Number(settings.deemphasisUs) || 75
+    deemphasisUs: Number(settings.deemphasisUs) || 75,
+    ssbLowCutHz: Number(settings.ssbLowCutHz) || 300,
+    ritHz: Number(settings.ritHz) || 0,
+    cwPitchHz: Number(settings.cwPitchHz) || 700,
+    agcMode: String(settings.agcMode || "medium")
   });
   const samples = audioDemodulator.process(converted.i, converted.q, sampleRate);
   if (!samples.length) return;
   const squelchOpen = levelDbfs >= Number(settings.squelchDb ?? -55);
   if (!squelchOpen) samples.fill(0);
   const levelRms = rms(samples);
-  postMessage({ type: "audio", samples, mode, outputRate: Number(settings.audioOutputRate) || 48000, squelchOpen, levelRms }, [samples.buffer]);
+  audioFramesProduced += 1;
+  audioSamplesProduced += samples.length;
+  postMessage({ type: "audio", samples, mode, outputRate: Number(settings.audioOutputRate) || 48000, squelchOpen, levelRms, audioFramesProduced, audioSamplesProduced }, [samples.buffer]);
 }
 
 function processBlock(message, bytes) {
@@ -137,6 +152,11 @@ function processBlock(message, bytes) {
   processedBlocks += 1;
   const levelDbfs = 10 * Math.log10(Math.max(1e-12, converted.power / 2));
   processAudio(converted, sampleRate, levelDbfs);
+  if (settings.decoderMode === "adsb" && sampleRate >= 2_000_000) {
+    adsbDecoder.configure({ sampleRate });
+    const decodedFrames = adsbDecoder.process(converted.i, converted.q, { receivedAtMs: Date.now() });
+    for (const frame of decodedFrames) postMessage({ type: "adsb", frame });
+  }
 
   const stride = Math.max(1, Math.min(8, Math.round(Number(settings.spectrumStride) || 1)));
   const computeSpectrum = (processedBlocks - 1) % stride === 0;
@@ -203,11 +223,13 @@ self.addEventListener("message", async (event) => {
       };
     }
     audioDemodulator.configure(settings);
+    adsbDecoder.configure({ sampleRate: Number(settings.sampleRate) || 2_400_000 });
     await initializeWasm(message.wasmUrl);
     postMessage({ type: "ready", wasmMode, settings, sharedMemory: Boolean(sharedPool) });
   } else if (message.type === "settings") {
     settings = { ...settings, ...message.settings };
     audioDemodulator.configure(settings);
+    adsbDecoder.configure({ sampleRate: Number(settings.sampleRate) || adsbDecoder.sampleRate });
     if (message.resetAveraging) { averageSpectrum = null; peakSpectrum = null; }
     if (message.resetAudio) audioDemodulator.reset();
     postMessage({ type: "settings-applied", settings });
@@ -229,7 +251,10 @@ self.addEventListener("message", async (event) => {
     sequenceGaps = 0;
     processedBlocks = 0;
     spectrumBlocks = 0;
+    audioFramesProduced = 0;
+    audioSamplesProduced = 0;
     audioDemodulator.reset();
+    adsbDecoder.reset();
     postMessage({ type: "reset-complete" });
   }
 });

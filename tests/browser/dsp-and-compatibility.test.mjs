@@ -29,12 +29,13 @@ test("transmit applications remain visible and unavailable on receive-only hardw
   assert.match(result.reason, /receive-only/);
 });
 
-test("WFM, NFM, and AM are active receive applications after the audio batch", () => {
+test("WFM, NFM, and AM remain active while current repaired audio output stays pending physical re-check", () => {
   for (const id of ["wfm", "nfm", "am"]) {
     const application = APPLICATIONS.find((entry) => entry.id === id);
     assert.ok(application, `${id} must remain in the registry`);
     assert.equal(application.portState, "ready");
-    assert.equal(application.verificationState, "hardware-tested");
+    assert.equal(application.verificationState, "fixture-tested");
+    assert.match(application.limitations.join(" "), /re-check/i);
     const result = evaluateApplication(application, { hasRx: true, hasTx: false, minFrequencyHz: 0, maxFrequencyHz: Infinity, maxSampleRate: 1_024_000 });
     assert.equal(result.available, true, `${id} should be available on the verified 1.024 Msps receive path`);
   }

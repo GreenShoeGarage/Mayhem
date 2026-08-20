@@ -1,17 +1,22 @@
-/* v0.7 audit summary — native file-scope Registrars live in src/generated_apps/*.cpp. */
+/* Generated audit summary — native file-scope Registrars live in src/generated_apps/*.cpp. */
 // 00 spectrum -> app::Category::Receive
 // 01 waterfall -> app::Category::Receive
 // 02 wfm -> app::Category::Receive
 // 03 nfm -> app::Category::Receive
 // 04 am -> app::Category::Receive
-// 05 scanner -> app::Category::Receive
-// 06 capture -> app::Category::Receive
-// 07 replay -> app::Category::Utilities
-// 08 adsbrx -> app::Category::Receive
-// 09 diagnostics -> app::Category::Utilities
-// 10 radiosetup -> app::Category::Settings
-// 11 compatibility -> app::Category::Utilities
-// 12 about -> app::Category::Settings
-// 13 simulation -> app::Category::Utilities
-// 14 jammer -> app::Category::Transmit
-// 15 replaytx -> app::Category::Transmit
+// 05 usb -> app::Category::Receive
+// 06 lsb -> app::Category::Receive
+// 07 cw -> app::Category::Receive
+// 08 amateur -> app::Category::Receive
+// 09 broadcast -> app::Category::Receive
+// 10 scanner -> app::Category::Receive
+// 11 capture -> app::Category::Receive
+// 12 replay -> app::Category::Utilities
+// 13 adsbrx -> app::Category::Receive
+// 14 diagnostics -> app::Category::Utilities
+// 15 radiosetup -> app::Category::Settings
+// 16 compatibility -> app::Category::Utilities
+// 17 about -> app::Category::Settings
+// 18 simulation -> app::Category::Utilities
+// 19 jammer -> app::Category::Transmit
+// 20 replaytx -> app::Category::Transmit

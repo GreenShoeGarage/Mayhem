@@ -125,6 +125,7 @@ export class ProcessingClient extends EventTarget {
     if (message?.type === "processed") this.dispatchEvent(new CustomEvent("spectrum", { detail: message }));
     else if (message?.type === "ack") this.dispatchEvent(new CustomEvent("ack", { detail: message }));
     else if (message?.type === "audio") this.dispatchEvent(new CustomEvent("audio", { detail: message }));
+    else if (message?.type === "adsb") this.dispatchEvent(new CustomEvent("adsb", { detail: message.frame }));
     else if (message?.type === "warning") { this.log?.warn(message.message, { detail: message.detail }); this.dispatchEvent(new CustomEvent("warning", { detail: message })); }
     else if (message?.type === "ready") { this.wasmMode = message.wasmMode; this.log?.info("Processing worker ready", { wasmMode: message.wasmMode, transportMode: this.transportMode }); }
   }

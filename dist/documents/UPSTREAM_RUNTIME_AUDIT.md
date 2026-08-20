@@ -1,47 +1,33 @@
-# Upstream runtime audit — MAYHEM RTL v0.7.0
+# Upstream runtime audit — MAYHEM RTL v0.8.2
 
 Pinned upstream: `wonderingStars/mayhem-b200@44736b9ca844732e18f35e86eb5beece1d9c2c57`
 
-Version 0.7.0 is a convergence pass. It does not claim that every upstream UI
-translation unit is byte-for-byte linked into WebAssembly. It records exactly
-which upstream behaviors were moved behind C++ browser-port seams and which
-source assets remain pending.
+Version 0.8.2 adds the Amateur Radio/SSB/CW browser functionality on the modular runtime-convergence seams established previously. It does not claim that every upstream UI or application translation unit is byte-for-byte linked into WebAssembly.
 
-| Upstream area | Upstream source reviewed | v0.7 browser state | Truthful status |
+| Upstream area | Upstream source reviewed | Browser state | Truthful status |
 |---|---|---|---|
-| UI geometry / RGB565 Color / KeyEvent ordinals | `src/ui/ui.hpp`, `src/ui/ui.cpp` | Browser core uses matching geometry, Color packing, 8×16 metrics and key ordinals in `src/mayhem/ui.*` | Adapted from upstream behavior; compile-tested |
-| Painter drawing seam | `src/ui/ui_painter.hpp`, `src/ui/ui_painter.cpp` | `src/mayhem/painter.*` renders only through the browser framebuffer `Display` adapter | Behavior-converged; exact upstream text/font dependency still pending |
-| Display abstraction | `src/ui/display.*` | Browser-specific framebuffer display adapter owns fill/line/rectangle operations | Browser replacement |
-| Application registry | `src/apps/app_registry.hpp`, `src/apps/app_registry.cpp` | Each generated C++ app translation unit contains a file-scope `app::Registrar`; static constructors populate `AppRegistry` | Native registration semantics implemented; fixed storage replaces STL in freestanding core |
-| Home/category behavior | `src/apps/main_menu.cpp` | Home → category → application push/pop flow lives in C++ `NavigationStack` | Behavior-converged |
-| Browser input | upstream `ui::KeyEvent`, encoder/touch conventions | Canvas maps keyboard, wheel and pointer to the C++ stack | Implemented and tested |
-| Live radio evidence inside Mayhem core | `radio::RadioDevice` behavioral contract | Browser mirrors actual frequency/rate/level/tuner/gain/drop/error state into the C++ runtime | Implemented as state mirror; direct app-to-WebUSB `RadioDevice` calls remain future full-Emscripten work |
-| Exact `fixed_8x16` glyph bytes | `src/ui/ui_font_fixed_8x16.*` | Current Painter uses the upstream 8×16 cell metrics with a compact browser-port glyph fallback | **Pending exact asset import** |
-| Exact bitmap/icon assets | `src/ui/bitmaps.*` | Browser shell icons and C++ text labels remain | **Pending exact asset import** |
-| Full theme implementation | `src/ui/theme.*` | Browser C++ core uses a small fixed Mayhem-style palette | **Pending full source import** |
-| Full widget/focus tree | `src/ui/ui_widget.*`, `src/ui/ui_focus.*`, `src/ui/ui_menu.*` | v0.7 has modular C++ Painter/Navigation/AppRegistry seams but not the complete upstream STL-based widget tree | **Pending full Emscripten source convergence** |
-| Native application translation units | `src/apps/*` | Registry identity is native C++ per app, while most actual application bodies still use browser-native panels or remain pending | Partial |
+| UI geometry / RGB565 Color / key ordinals | `src/ui/ui.hpp`, `src/ui/ui.cpp` | Matching geometry/packing/8×16 metrics/key ordinals in `src/mayhem/ui.*` | Adapted + compile-tested |
+| Painter seam | `src/ui/ui_painter.*` | `src/mayhem/painter.*` draws through browser framebuffer adapter | Behavior-converged; exact font assets pending |
+| Application registry | `src/apps/app_registry.*` | Per-app file-scope `app::Registrar` generated from one definition | Native registration semantics implemented |
+| Home/category behavior | `src/apps/main_menu.cpp` | C++ Home → Category → Application push/pop | Behavior-converged |
+| Analog audio mode model | `src/apps/analog_audio_app.cpp`, receiver model | Audited upstream configuration exposes AM variants, USB, LSB and CW; browser worker implements WFM/NFM/AM/USB/LSB/CW | Mode/product behavior aligned; browser DSP adapter is independently implemented and fixture-tested |
+| ADS-B / Mode S | `src/apps/ui_adsb_rx.*`, upstream tests | Browser worker implements CRC, selected extended-squitter fields, CPR and tracking | Ported subset with deterministic fixtures; on-air pending |
+| Browser radio state | `radio::RadioDevice` contract | Actual frequency/rate/level/tuner/gain/drop/error mirrored into core | Implemented state mirror; complete app-to-WebUSB C++ backend remains future full-Emscripten work |
+| Exact fixed 8×16 font bytes | `src/ui/ui_font_fixed_8x16.*` | Fallback glyph renderer with upstream cell geometry | Pending exact asset import |
+| Exact bitmap/theme assets | `src/ui/bitmaps.*`, `src/ui/theme.*` | Browser/core replacements | Pending exact asset import |
+| Full widget/focus tree | `src/ui/ui_widget.*`, `ui_focus.*`, `ui_menu.*` | Modular seams exist; complete upstream STL tree not compiled in freestanding artifact | Pending full Emscripten convergence |
+| Native application bodies | `src/apps/*` | Registry identity is native C++; Broadcast/Amateur/Scanner/ADS-B use browser/worker implementations | Partial application convergence |
 
-## Why the freestanding core still differs from the full upstream host port
+## Analog audio behavior used in v0.8.2
 
-The checked-in release artifact is built in the current development environment
-with stock `clang --target=wasm32 -nostdlib`. The exact upstream host widget tree
-uses C++ standard-library types such as `std::vector`, `std::string`,
-`std::function`, and `std::unique_ptr`. The project retains an `MB200_WEB=ON`
-Emscripten target for that complete convergence path. Version 0.7.0 deliberately
-moves the browser core into the same modular boundaries first rather than
-copying the upstream widget code and pretending it is compiled when the
-required Emscripten C++ runtime is not present in the artifact environment.
+The pinned `analog_audio_app.cpp` exposes an AM-family configuration menu containing `DSB 9k`, `DSB 6k`, `USB`, `LSB`, and `CW`, alongside the upstream receiver model's NFM/WFM modes. MAYHEM RTL uses that audited organization as evidence that USB/LSB/CW belong in the analog receive family.
 
-## v0.7 acceptance evidence
+The browser implementation is not a textual copy of that complete native application. It uses worker-side complex filtering, digital RIT, CW beat generation and browser AudioWorklet output appropriate to the RTL-SDR/WebUSB target. Deterministic fixtures verify the selected browser behavior.
 
-- The WebAssembly core contains 16 applications populated by static
-  constructors from individual file-scope `Registrar` translation units.
-- Browser and WebAssembly registry order match the one JSON build definition.
-- Application selection pushes a C++ application frame and back navigation pops
-  app → category → Home.
-- Upstream-compatible UI key ordinals and RGB565 Color packing are covered by
-  native C++ tests.
-- Actual tuner/gain/drop/error state can be mirrored into the C++ logical
-  display.
-- The same C++ runtime sources are part of the checked-in `MB200_WEB=ON` target.
+## ADS-B source behavior used in v0.8
+
+The browser decoder follows audited `mayhem-b200` Mode S behavior for its supported subset, including the 24-bit CRC polynomial, identification character mapping, supported altitude extraction, velocity parsing and global airborne CPR pairing. Browser-specific sample/pulse detection and structured presentation are browser adapters.
+
+## Why the freestanding core still differs
+
+The static build uses stock Clang freestanding `wasm32` modules. The exact upstream host widget tree depends on the C++ standard library. The repository retains `MB200_WEB=ON` as the eventual complete Emscripten source-convergence target and keeps that boundary explicit.

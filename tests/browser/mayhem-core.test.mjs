@@ -31,7 +31,7 @@ test("Mayhem core owns a 240x320 framebuffer and paints its UI in WebAssembly", 
   const core = await loadCore();
   assert.equal(core.exports.mayhem_core_width(), 240);
   assert.equal(core.exports.mayhem_core_height(), 320);
-  assert.equal(core.exports.mayhem_core_app_count(), 16);
+  assert.equal(core.exports.mayhem_core_app_count(), APPLICATIONS.length);
   const ptr = core.exports.mayhem_core_framebuffer_ptr();
   assert.ok(ptr > 0);
   core.exports.mayhem_core_render();
@@ -61,7 +61,7 @@ test("Mayhem core category navigation emits application activation through the r
   assert.equal(core.exports.mayhem_core_nav_depth(), 1);
   assert.equal(core.exports.mayhem_core_selected_index(), 0);
 
-  // Select the first Receive app, Spectrum. v0.7 pushes an actual application
+  // Select the first Receive app, Spectrum. the core pushes an actual application
   // frame before emitting the browser activation event.
   core.exports.mayhem_core_input_key(4);
   assert.equal(core.exports.mayhem_core_nav_depth(), 2);
@@ -102,7 +102,7 @@ test("browser and WebAssembly registries are generated from one source manifest"
 });
 
 
-test("v0.7 Mayhem core accepts actual browser radio details", async () => {
+test("v0.8 Mayhem core accepts actual browser radio details", async () => {
   const core = await loadCore();
   core.exports.mayhem_core_set_source(1);
   core.exports.mayhem_core_set_receiver(99_900_000, 2_400_000, -123, 2);
@@ -112,12 +112,12 @@ test("v0.7 Mayhem core accepts actual browser radio details", async () => {
   assert.ok(core.exports.mayhem_core_framebuffer_ptr() > 0);
 });
 
-test("v0.7 Mayhem core remains a self-contained static WebAssembly asset", async () => {
+test("v0.8 Mayhem core remains a self-contained static WebAssembly asset", async () => {
   const bytes = await readFile("dist/assets/mayhem_core.wasm");
   const module = await WebAssembly.compile(bytes);
   assert.deepEqual(WebAssembly.Module.imports(module), []);
   const instance = await WebAssembly.instantiate(module, {});
   assert.equal(typeof instance.exports.__wasm_call_ctors, "function");
   instance.exports.__wasm_call_ctors();
-  assert.equal(instance.exports.mayhem_core_app_count(), 16);
+  assert.equal(instance.exports.mayhem_core_app_count(), APPLICATIONS.length);
 });

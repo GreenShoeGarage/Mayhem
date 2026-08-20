@@ -11,18 +11,18 @@ if (!globalThis.navigator) Object.defineProperty(globalThis, "navigator", { valu
 const quietLog = { info() {}, warn() {}, error() {} };
 
 test("hardware verification metadata records completed soak checks and remaining matrix work", () => {
-  assert.equal(HARDWARE_VERIFICATION.state, "v0.6-reference-hardware-validated");
+  assert.equal(HARDWARE_VERIFICATION.state, "reference-hardware-validated");
   assert.equal(HARDWARE_VERIFICATION.sampleRate, 2_400_000);
   assert.ok(HARDWARE_VERIFICATION.verifiedCapabilities.includes("waterfall"));
   assert.ok(HARDWARE_VERIFICATION.verifiedCapabilities.includes("30-minute 1.024 Msps soak"));
   assert.ok(HARDWARE_VERIFICATION.verifiedCapabilities.includes("2.4 Msps / 60-minute soak"));
-  assert.ok(HARDWARE_VERIFICATION.verifiedCapabilities.includes("WFM on-air audio"));
+  assert.ok(HARDWARE_VERIFICATION.pendingChecks.includes("v0.8.2 USB/LSB/CW on-air validation"));
   assert.ok(HARDWARE_VERIFICATION.pendingChecks.includes("multi-device matrix"));
 });
 
 test("diagnostic exports carry hardware verification evidence", () => {
   const payload = createDiagnosticPackage({ preflight: {}, browser: {}, connection: {}, device: {}, receiver: {}, stream: {}, processing: {}, capture: null, application: {}, project: {}, logs: [] });
-  assert.equal(payload.hardwareVerification.state, "v0.6-reference-hardware-validated");
+  assert.equal(payload.hardwareVerification.state, "reference-hardware-validated");
   assert.equal(payload.hardwareVerification.observedDroppedSamples, 0);
 });
 

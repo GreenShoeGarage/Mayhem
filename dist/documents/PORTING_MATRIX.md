@@ -2,45 +2,33 @@
 
 Pinned upstream: `wonderingStars/mayhem-b200@44736b9ca844732e18f35e86eb5beece1d9c2c57`
 
-| Component or responsibility | Browser classification | v0.7.0 state | Verification |
+| Component or responsibility | Browser classification | v0.8.2 state | Verification |
 |---|---|---|---|
-| `radio::RadioDevice` contract | Portable with browser backend | Native C++ contract preserved; live browser state is mirrored into Mayhem core; direct app-to-WebUSB call path remains future full Emscripten work | Contract-tested; live browser transport hardware-validated |
-| Actual-value-returning setters | Portable | Implemented in browser WebUSB transport and serialized command queue | Mock-tested; reference-hardware tested |
-| Device capability policy | Portable with RTL-SDR policy | Receive-only manifest and conservative caps implemented | Unit-tested; reference-hardware tested |
-| Self-registering application registry | Portable with linker care | `src/app_registry.json` generates one C++ translation unit per app; each contains file-scope `app::Registrar`; WebAssembly static constructors populate C++ `AppRegistry` | Browser/Wasm order-tested; native C++ registry-tested |
-| 240 × 320 logical framebuffer | Browser display adapter | C++ `Runtime` owns framebuffer; browser only presents pixels | WebAssembly-tested; direct framebuffer review |
-| UI geometry / RGB565 Color / KeyEvent | Portable | Moved into `src/mayhem/ui.*` with audited upstream ordinals/packing/metrics | Native C++ compile/unit-tested |
-| Painter | Portable with browser display | Moved into `src/mayhem/painter.*`; all logical UI drawing goes through browser `Display` adapter | WebAssembly-tested |
-| Navigation stack | Portable with browser input | C++ Home → Category → Application push/pop stack; browser receives consumable activation events | WebAssembly navigation-tested |
-| Exact upstream fixed 8 × 16 font bytes | Portable | **Pending exact byte-table import**; v0.7 uses 8 × 16 metrics with compact browser-port glyph fallback | Not claimed exact |
-| Exact bitmap/icon set | Portable | Pending | Not claimed |
-| Full upstream theme implementation | Portable | Small browser-core palette only | Pending full import |
-| Complete upstream widget/focus/menu tree | Portable with Emscripten C++ runtime | Modular seams are ready; byte-for-byte STL-based translation units not yet linked in freestanding build | Pending full Emscripten convergence |
-| Keyboard, pointer, wheel and touch input | Browser adapter | Canvas maps Mayhem key ordinals, encoder movement and logical pointer coordinates into C++ navigation | Unit-tested; prior browser smoke evidence |
-| Native main loop | Replaced | Browser event loop / worker pipeline; `MB200_WEB=ON` target renders same C++ runtime | Build-target audited |
-| Universal Hardware Driver backend | Excluded | Not compiled or bundled | Static audit |
-| `sdrlink` / native remote server | Excluded | Not compiled or bundled | Static audit |
-| Windows Graphics Device Interface / X Window System | Replaced | Canvas presentation of WebAssembly framebuffer | Browser path implemented |
-| Windows Multimedia / Advanced Linux Sound Architecture | Replaced | AudioWorklet | Fixture-tested; user-validated on-air/reference hardware |
-| WinHTTP telemetry subsystem | Excluded | No telemetry source or endpoint in distribution | No-network audit |
-| Native filesystem | Replaced | Indexed Database and Origin Private File System | Browser path implemented |
-| RTL2832U WebUSB control | Browser adapter | Validated Realtek identifiers, second-stage descriptor checks, R8xx control | Mock-tested; reference-hardware validated |
-| R820T/R820T2/R860 family | Browser adapter | Conservative family reporting | Reference-hardware validated as family; exact differentiation pending |
-| R828D / RTL-SDR Blog V4 profile | Browser adapter | Detection and switching profile implemented | Hardware-unverified |
-| Raw unsigned 8-bit IQ receive | Browser adapter | Bounded transfer pump; transferable/shared worker handoff | 1.024 and 2.4 Msps user-validated on reference hardware |
-| SharedArrayBuffer handoff | Browser adapter | Fixed-slot raw-sample pool with worker acknowledgement | Unit-tested; reference-hardware validated |
-| Byte-to-complex conversion | Portable DSP kernel | Local WebAssembly kernel | Unit-tested |
-| Spectrum / waterfall | Portable with browser renderer | Implemented | Reference-hardware validated |
-| WFM audio | Portable DSP + AudioWorklet | Implemented | Fixture-tested; user-validated on-air/reference hardware |
-| NFM audio | Portable DSP + AudioWorklet | Implemented | Fixture-tested; user-validated on-air/reference hardware |
-| AM audio | Portable DSP + AudioWorklet | Implemented | Fixture-tested; user-validated on-air/reference hardware |
-| Frequency scanner | Portable control/application logic | Pending | Not claimed |
-| Raw capture | Browser storage adapter | Streaming capture implemented | Simulation/browser workflow tested; 2.4 Msps receive+capture user-validated |
-| Replay | Browser file adapter | Local block replay implemented | Unit/browser workflow tested |
-| ADS-B receiver | Portable decoder + structured panel | Manifest entry and fixture target only | Pending decoder |
-| Map panels | Browser structured panel | Local graticule design recorded | Pending |
-| Transmit applications | Blocked by receive-only hardware | Visible, locked, explanatory in browser and C++ registry | Unit-tested gating |
-| Bias tee | Browser adapter, device-specific | Advanced-only, default off, warning required | Hardware-unverified |
-| Direct sampling | Browser adapter, device-specific | Advanced-only | Hardware-unverified |
-| Progressive Web Application | Browser adapter | Implemented | Offline reload historically browser-tested |
-| Cross-origin isolation | Hosting responsibility | Headers supplied; shared path activates only when supported | Header/preflight audit; reference shared path validated |
+| `radio::RadioDevice` contract | Portable with browser backend | Interface/scaffold preserved; WebUSB transport active below browser seam | C++ contract + physical reference receive validation |
+| Actual-value setters | Portable | Serialized browser control queue updates state after hardware acceptance | Unit + physical receive tested |
+| RTL2832U WebUSB | Browser adapter | Validated identifiers, descriptor checks, tuner init/control, live streaming | Physical reference validated |
+| Direct sampling | Browser adapter | Explicit input-path control used by Broadcast AM and Amateur HF below tuner floor | Unit-tested decision/control path; focused HF review pending |
+| R820T/R820T2/R860 family | Browser adapter | Conservative family detection/reporting | Physical reference family validated; exact differentiation pending |
+| R828D / Blog V4 profile | Browser adapter | Detection/input switching and zero-minimum low-frequency compatibility profile | Unit/source audited; separate hardware validation pending |
+| WFM/NFM/AM demodulators | DSP + AudioWorklet | Implemented | Deterministic fixtures + prior on-air history; repaired current audio-output layer pending physical re-check |
+| USB/LSB | Worker DSP + AudioWorklet | Complex sideband selection, SSB filter, RIT, audio AGC | Deterministic selected/opposite-sideband and RIT fixtures; on-air pending |
+| CW | Worker DSP + AudioWorklet | Narrow complex filter + adjustable beat pitch + audio AGC | Deterministic beat-pitch fixture; on-air pending |
+| Amateur Radio | Browser workflow on shared receiver | 160 m–70 cm presets, mode/filter/fine tune/RIT/AGC, HF input manager | Unit-tested; physical focused review pending |
+| Broadcast Radio | Browser workflow on shared receiver | FM/AM presets, direct-sampling decision, channel stepping, station save | Unit-tested workflow; repaired current audio path pending physical review |
+| Frequency Scanner | Portable control logic + browser panel | Serialized scan, threshold, hold, history, lockouts, CSV | Unit-tested; live range review pending |
+| ADS-B decoder | Portable decoder + worker/browser panel | Mode S CRC, DF17/18, ID, altitude, velocity, CPR, tracker, JSON | Fixture/simulation-tested; on-air pending |
+| ADS-B graticule | Browser structured panel | Local coordinate graticule | Static/unit reviewed; no remote maps |
+| Raw IQ capture | Browser storage | Streaming Origin Private File System / Indexed Database | Browser workflow + physical receive/capture validated |
+| Replay | Browser file adapter | Local block replay + modulation metadata restore | Unit/browser tested |
+| Spectrum/waterfall | DSP + browser renderer | Implemented | Physical reference validated |
+| Stream planner / SharedArrayBuffer | Browser performance adapter | Bounded profiles, shared fixed slots, transferable fallback | Unit + physical reference validated |
+| AudioWorklet output | Browser audio adapter | Fixed ring + prebuffer/rebuffer diagnostics | Automated structure/behavior tested; repaired current output pending physical re-check |
+| 240 × 320 framebuffer | Browser display adapter | C++/WebAssembly-owned | C++/WebAssembly tested |
+| Application registry | Portable with linker care | JSON generates browser metadata + per-app native C++ Registrar units | Unit/C++ tested |
+| Navigation | Portable behavior | C++ Home → Category → Application stack | Unit/C++ tested |
+| Version ownership | Build/runtime | Semantic source + injected UI/cache version + runtime HTML/JS guard | Build + regression tested |
+| Exact upstream font/bitmap/theme | Portable assets | Not byte-for-byte linked | Pending deeper Emscripten convergence |
+| Full upstream widget/focus tree | Portable with browser adapter | Modular seam exists; complete STL runtime not linked in freestanding build | Pending full Emscripten convergence |
+| Transmit applications | Blocked by receive-only hardware | Visible and locked | Unit-tested gating |
+| PWA/offline shell | Browser adapter | Implemented with versioned network-first sensitive assets | Browser/static audit |
+| Telemetry | Excluded | None | No-network audit |

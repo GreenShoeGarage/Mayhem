@@ -1,3 +1,5 @@
+import { generateAdsbIqFixture } from "../dsp/adsb.js";
+
 function xorshift32(seed) {
   let value = seed >>> 0 || 0x12345678;
   return () => {
@@ -34,10 +36,16 @@ export class SimulationSource extends EventTarget {
     this.random = xorshift32(0x4d415948);
     this.startedAt = 0;
     this.onBlock = null;
+    this.adsbFixtureStream = null;
+    this.adsbFixtureRate = 0;
   }
 
   configure(settings = {}) {
-    if (Number.isFinite(settings.sampleRate)) this.sampleRate = Number(settings.sampleRate);
+    if (Number.isFinite(settings.sampleRate)) {
+      const nextRate = Number(settings.sampleRate);
+      if (nextRate !== this.sampleRate) { this.adsbFixtureStream = null; this.adsbFixtureRate = 0; }
+      this.sampleRate = nextRate;
+    }
     if (Number.isFinite(settings.centerFrequencyHz)) this.centerFrequencyHz = Number(settings.centerFrequencyHz);
     if (Number.isFinite(settings.blockSamples)) this.blockSamples = Math.max(1024, Math.min(65536, Math.round(settings.blockSamples)));
     if (settings.scenario && SCENARIOS[settings.scenario]) this.scenario = settings.scenario;
@@ -86,6 +94,38 @@ export class SimulationSource extends EventTarget {
     const output = new Uint8Array(this.blockSamples * 2);
     const sr = this.sampleRate;
     const scenario = this.scenario;
+    if (scenario === "adsb") {
+      if (!this.adsbFixtureStream || this.adsbFixtureRate !== sr) {
+        const frames = [
+          "8D4840D6202CC371C32CE0576098",
+          "8D40621D58C382D690C8AC2863A7",
+          "8D40621D58C386435CC412692AD6"
+        ];
+        const gap = Math.max(1, Math.round(sr * 0.0015));
+        const chunks = frames.map((hex) => generateAdsbIqFixture(hex, { sampleRate: sr, paddingUs: 10 }));
+        const samples = chunks.reduce((sum, chunk) => sum + chunk.i.length + gap, 0);
+        const stream = new Uint8Array(samples * 2);
+        let cursor = 0;
+        for (const chunk of chunks) {
+          for (let index = 0; index < chunk.i.length; index += 1) {
+            stream[cursor * 2] = Math.max(0, Math.min(255, Math.round(127.5 + chunk.i[index] * 112)));
+            stream[cursor * 2 + 1] = Math.max(0, Math.min(255, Math.round(127.5 + chunk.q[index] * 112)));
+            cursor += 1;
+          }
+          for (let index = 0; index < gap; index += 1) { stream[cursor * 2] = 127; stream[cursor * 2 + 1] = 127; cursor += 1; }
+        }
+        this.adsbFixtureStream = stream;
+        this.adsbFixtureRate = sr;
+      }
+      const sampleCount = this.adsbFixtureStream.length / 2;
+      for (let n = 0; n < this.blockSamples; n += 1) {
+        const position = (this.sampleIndex + n) % sampleCount;
+        output[n * 2] = this.adsbFixtureStream[position * 2];
+        output[n * 2 + 1] = this.adsbFixtureStream[position * 2 + 1];
+      }
+      this.sampleIndex += this.blockSamples;
+      return output.buffer;
+    }
     for (let n = 0; n < this.blockSamples; n += 1) {
       const index = this.sampleIndex + n;
       const t = index / sr;
@@ -109,11 +149,6 @@ export class SimulationSource extends EventTarget {
       } else if (scenario === "changing") {
         const level = 0.12 + 0.72 * (0.5 + 0.5 * Math.sin(Math.PI * 2 * 0.18 * t));
         addCarrier(155_000, level);
-      } else if (scenario === "adsb") {
-        const framePosition = index % Math.max(1, Math.round(sr * 0.002));
-        const pulseSamples = Math.max(1, Math.round(sr * 0.5e-6));
-        const pulse = [0,2,7,9,14,18,21,29,34,41,47,53,61,67,73,79,86,93,101,108].some((slot) => framePosition >= slot * pulseSamples && framePosition < (slot + 1) * pulseSamples);
-        if (pulse) addCarrier(0, 0.92);
       } else {
         addCarrier(-215_000, 0.54);
         addCarrier(83_000, 0.78, 2.5 * Math.sin(Math.PI * 2 * 1200 * t));

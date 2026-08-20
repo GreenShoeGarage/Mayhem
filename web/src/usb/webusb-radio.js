@@ -73,6 +73,9 @@ export class WebUsbRadio extends EventTarget {
       this.caps = conservativeCaps(this.device);
       navigator.usb?.addEventListener?.("disconnect", this.usbDisconnectHandler);
       const actualRate = await this.device.setSampleRate(Number(settings.sampleRate));
+      const directMap = { off: DirectSampling.Off, i: DirectSampling.I, q: DirectSampling.Q };
+      const requestedDirectSampling = directMap[settings.directSampling] ?? DirectSampling.Off;
+      await this.device.setDirectSamplingMethod(requestedDirectSampling);
       const actualFrequency = await this.device.setCenterFrequency(Number(settings.centerFrequencyHz));
       if (settings.gainMode === "automatic") await this.device.setGain(null);
       else await this.device.setGain(nearestGain(settings.gainDb));
@@ -82,7 +85,7 @@ export class WebUsbRadio extends EventTarget {
         sampleRate: actualRate,
         gainDb: settings.gainMode === "automatic" ? null : nearestGain(settings.gainDb),
         ppm: Number(settings.ppm ?? 0),
-        directSampling: DirectSampling.Off,
+        directSampling: requestedDirectSampling,
         biasTee: false
       };
       this.stateMachine.transition(ConnectionState.CONNECTED_IDLE, "RTL2832U initialized");

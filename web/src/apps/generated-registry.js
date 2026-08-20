@@ -52,9 +52,9 @@ export const APPLICATION_DEFINITIONS = Object.freeze([
     "requiresAudio": true,
     "requiresMap": false,
     "portState": "ready",
-    "verificationState": "hardware-tested",
+    "verificationState": "fixture-tested",
     "limitations": [
-      "On-air audio is user-verified on the reference RTL2838UHIDIR configuration; wider tuner/browser coverage remains pending."
+      "The demodulator has prior on-air reference-hardware history, but the browser audio-output path changed in v0.8.1 and the current repaired path still needs a focused physical re-check."
     ]
   },
   {
@@ -71,9 +71,9 @@ export const APPLICATION_DEFINITIONS = Object.freeze([
     "requiresAudio": true,
     "requiresMap": false,
     "portState": "ready",
-    "verificationState": "hardware-tested",
+    "verificationState": "fixture-tested",
     "limitations": [
-      "On-air audio is user-verified on the reference RTL2838UHIDIR configuration; wider tuner/browser coverage remains pending."
+      "The demodulator has prior on-air reference-hardware history, but the browser audio-output path changed in v0.8.1 and the current repaired path still needs a focused physical re-check."
     ]
   },
   {
@@ -90,9 +90,109 @@ export const APPLICATION_DEFINITIONS = Object.freeze([
     "requiresAudio": true,
     "requiresMap": false,
     "portState": "ready",
-    "verificationState": "hardware-tested",
+    "verificationState": "fixture-tested",
     "limitations": [
-      "On-air audio is user-verified on the reference RTL2838UHIDIR configuration; wider tuner/browser coverage remains pending."
+      "The demodulator has prior on-air reference-hardware history, but the browser audio-output path changed in v0.8.1 and the current repaired path still needs a focused physical re-check."
+    ]
+  },
+  {
+    "id": "usb",
+    "coreName": "USB",
+    "name": "Upper Sideband Receiver",
+    "icon": "U",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 3000,
+    "requiresAudio": true,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "fixture-tested",
+    "limitations": [
+      "Worker-side complex sideband selection, fine tuning, filtering and audio AGC are deterministic-fixture tested; on-air amateur-radio validation is pending.",
+      "HF reception below the normal tuner floor may require RTL2832U direct sampling or an external upconverter."
+    ]
+  },
+  {
+    "id": "lsb",
+    "coreName": "LSB",
+    "name": "Lower Sideband Receiver",
+    "icon": "L",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 3000,
+    "requiresAudio": true,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "fixture-tested",
+    "limitations": [
+      "Worker-side complex sideband selection, fine tuning, filtering and audio AGC are deterministic-fixture tested; on-air amateur-radio validation is pending.",
+      "HF reception below the normal tuner floor may require RTL2832U direct sampling or an external upconverter."
+    ]
+  },
+  {
+    "id": "cw",
+    "coreName": "CW",
+    "name": "Continuous Wave Receiver",
+    "icon": "·−",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 1000,
+    "requiresAudio": true,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "fixture-tested",
+    "limitations": [
+      "Adjustable beat frequency and narrow filtering are deterministic-fixture tested; on-air CW validation is pending."
+    ]
+  },
+  {
+    "id": "amateur",
+    "coreName": "Amateur Radio",
+    "name": "Amateur Radio Receiver",
+    "icon": "⌁",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 3000,
+    "requiresAudio": true,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "unit-tested",
+    "limitations": [
+      "Band edges and mode defaults are convenience presets, not a regulatory database or authorization to transmit.",
+      "HF presets automatically request direct sampling when the selected frequency is below the connected receiver normal tuner floor."
+    ]
+  },
+  {
+    "id": "broadcast",
+    "coreName": "Broadcast Radio",
+    "name": "Broadcast AM / FM Radio",
+    "icon": "♫",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 200000,
+    "requiresAudio": true,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "unit-tested",
+    "limitations": [
+      "The WFM/AM demodulators have deterministic fixtures and prior reference-hardware history; the repaired v0.8.1+ browser audio-output path and this dedicated broadcast workflow still need a focused physical re-check.",
+      "Medium-wave AM may require RTL2832U direct sampling on ordinary R8xx dongles; RTL-SDR Blog V4-class hardware can use its low-frequency input path when detected.",
+      "AM channel spacing varies by region; the preset offers 10 kHz and 9 kHz stepping."
     ]
   },
   {
@@ -108,10 +208,10 @@ export const APPLICATION_DEFINITIONS = Object.freeze([
     "requiredBandwidthHz": 0,
     "requiresAudio": false,
     "requiresMap": false,
-    "portState": "browser port pending",
-    "verificationState": "not tested",
+    "portState": "ready",
+    "verificationState": "unit-tested",
     "limitations": [
-      "Serialized scan controller pending."
+      "Serialized tuning, threshold/hold behavior, and scan-history logic are automated-test verified; live scan review on additional bands remains operator-dependent."
     ]
   },
   {
@@ -165,10 +265,11 @@ export const APPLICATION_DEFINITIONS = Object.freeze([
     "requiredBandwidthHz": 2000000,
     "requiresAudio": false,
     "requiresMap": true,
-    "portState": "browser port pending",
-    "verificationState": "not tested",
+    "portState": "ready",
+    "verificationState": "unit-tested",
     "limitations": [
-      "Decoder and local graticule panel pending; no aircraft data leaves the browser."
+      "DF17/DF18 extended-squitter CRC, identification, altitude, velocity and global airborne CPR are implemented with deterministic fixtures; on-air aircraft decoding remains to be verified.",
+      "No aircraft data leaves the browser; the graticule uses no remote map tiles."
     ]
   },
   {

@@ -7,6 +7,12 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const web = path.join(root, "web");
 const dist = path.join(root, "dist");
+const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+const configSourceText = await readFile(path.join(web, "src", "config.js"), "utf8");
+const cmakeSourceText = await readFile(path.join(root, "CMakeLists.txt"), "utf8");
+const escapedVersion = packageJson.version.replaceAll(".", "\\.");
+if (!new RegExp(`APP_VERSION\\s*=\\s*["']${escapedVersion}["']`).test(configSourceText)) throw new Error(`Version mismatch: package.json is ${packageJson.version} but web/src/config.js is not.`);
+if (!new RegExp(`VERSION\\s+${escapedVersion}`).test(cmakeSourceText)) throw new Error(`Version mismatch: package.json is ${packageJson.version} but CMakeLists.txt is not.`);
 
 const registrySource = path.join(root, "src", "app_registry.json");
 const registry = JSON.parse(await readFile(registrySource, "utf8"));
@@ -44,7 +50,7 @@ for (let index = 0; index < registry.length; index += 1) {
 }
 // Keep a human-readable generated summary for audits; it is no longer compiled into the core.
 const generatedCpp = [
-  "/* v0.7 audit summary — native file-scope Registrars live in src/generated_apps/*.cpp. */",
+  "/* Generated audit summary — native file-scope Registrars live in src/generated_apps/*.cpp. */",
   ...registry.map((entry, index) => `// ${String(index).padStart(2, "0")} ${entry.id} -> app::Category::${entry.category}`),
   ""
 ].join("\n");
@@ -54,7 +60,6 @@ await rm(dist, { recursive: true, force: true });
 await mkdir(dist, { recursive: true });
 await cp(web, dist, { recursive: true });
 await mkdir(path.join(dist, "assets"), { recursive: true });
-const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
 for (const relative of ["index.html", "service-worker.js"]) {
   const target = path.join(dist, relative);
   const text = await readFile(target, "utf8");
@@ -168,6 +173,19 @@ const assets = (await walk(dist))
 const serviceWorkerPath = path.join(dist, "service-worker.js");
 const serviceWorker = (await readFile(serviceWorkerPath, "utf8")).replace("__ASSET_LIST__", JSON.stringify(assets, null, 2));
 await writeFile(serviceWorkerPath, serviceWorker);
+
+const builtIndex = await readFile(path.join(dist, "index.html"), "utf8");
+const builtConfig = await readFile(path.join(dist, "src", "config.js"), "utf8");
+const builtWorker = await readFile(serviceWorkerPath, "utf8");
+for (const [label, text] of [["index", builtIndex], ["config", builtConfig], ["service worker", builtWorker]]) {
+  if (text.includes("__APP_VERSION__")) throw new Error(`Unresolved application-version token remains in built ${label}.`);
+}
+if (!builtIndex.includes(`v${packageJson.version}`)) throw new Error("Built header/About version does not match package.json.");
+if (!builtIndex.includes(`data-app-version="${packageJson.version}"`)) throw new Error("Built HTML runtime-version marker does not match package.json.");
+if (!builtIndex.includes(`./src/app.js?v=${packageJson.version}`)) throw new Error("Built entry module is not version-addressed.");
+if (!builtIndex.includes(`./styles.css?v=${packageJson.version}`)) throw new Error("Built stylesheet is not version-addressed.");
+if (!builtConfig.includes(`APP_VERSION = "${packageJson.version}"`)) throw new Error("Built JavaScript version does not match package.json.");
+if (!builtWorker.includes(`mayhem-rtl-v${packageJson.version}`)) throw new Error("Service-worker cache version does not match package.json.");
 
 for (const file of (await walk(path.join(dist, "src"))).filter((name) => name.endsWith(".js"))) {
   const check = spawnSync(process.execPath, ["--check", path.join(dist, "src", file)], { encoding: "utf8" });

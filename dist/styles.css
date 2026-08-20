@@ -436,3 +436,59 @@ tr:hover td { background: rgba(255,255,255,.018); }
   .receiver-control-deck { grid-template-columns: 1fr; }
   .receiver-action-cluster { grid-template-columns: 1fr 1fr; }
 }
+
+/* v0.8 receiver applications */
+.broadcast-band-switch { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; margin-bottom: 12px; }
+.band-button { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 12px; min-height: 70px; padding: 12px 16px; text-align: left; color: var(--muted); background: #0c120e; border: 1px solid var(--line); border-radius: 11px; cursor: pointer; }
+.band-button strong { color: var(--text); font-size: 26px; letter-spacing: -.04em; }
+.band-button span { color: var(--dim); font: 10px/1.4 var(--mono); }
+.band-button.active { border-color: rgba(215,255,63,.55); background: linear-gradient(145deg,rgba(215,255,63,.11),rgba(215,255,63,.025)); box-shadow: inset 0 0 0 1px rgba(215,255,63,.08); }
+.band-button.active strong { color: var(--accent); }
+.broadcast-radio-console { padding: 18px; }
+.broadcast-frequency { display: grid; grid-template-columns: 54px minmax(180px,520px) 54px; justify-content: center; align-items: center; gap: 10px; margin: 18px auto; }
+.broadcast-frequency > div { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: baseline; gap: 10px; padding: 9px 14px; background: #050805; border: 1px solid var(--line-strong); border-radius: 10px; }
+.broadcast-frequency input { min-width: 0; width: 100%; padding: 0; color: var(--accent); background: transparent; border: 0; outline: 0; text-align: right; font: 700 clamp(34px,5vw,62px)/1 var(--mono); letter-spacing: -.05em; }
+.broadcast-frequency span { color: var(--dim); font: 700 13px/1 var(--mono); }
+.tune-button { width: 54px; height: 54px; color: var(--text); background: #121a14; border: 1px solid var(--line-strong); border-radius: 50%; font-size: 28px; cursor: pointer; }
+.tune-button:hover { border-color: var(--accent); color: var(--accent); }
+.broadcast-meta { display: flex; flex-wrap: wrap; justify-content: center; gap: 7px; margin-bottom: 15px; }
+.broadcast-meta span { padding: 5px 8px; color: var(--muted); background: #0a0f0b; border: 1px solid var(--line); border-radius: 999px; font: 700 9px/1 var(--mono); }
+.broadcast-actions { display: grid; grid-template-columns: repeat(4,minmax(120px,1fr)); gap: 8px; }
+.compact-grid { gap: 10px; margin-top: 14px; }
+.scanner-view .check-row { align-self: end; margin-bottom: 3px; }
+.packet-list { display: grid; gap: 5px; max-height: 280px; overflow: auto; }
+.packet-row { display: grid; grid-template-columns: minmax(240px,.8fr) minmax(0,1.2fr); gap: 12px; padding: 7px 9px; background: #090e0a; border: 1px solid var(--line); border-radius: 6px; color: var(--dim); font-size: 10px; }
+.packet-row code { color: var(--accent); overflow-wrap: anywhere; }
+.adsb-graticule { display: block; width: 100%; max-height: 460px; aspect-ratio: 15/7; background: #070b08; border: 1px solid var(--line); border-radius: 8px; }
+.adsb-main { align-items: start; }
+.notice-box.success { background: rgba(99,229,143,.06); border-color: rgba(99,229,143,.25); }
+.notice-box.success strong { color: var(--green); }
+@media (max-width: 760px) {
+  .broadcast-actions { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .broadcast-frequency { grid-template-columns: 44px minmax(0,1fr) 44px; }
+  .tune-button { width: 44px; height: 44px; }
+  .packet-row { grid-template-columns: 1fr; }
+}
+
+/* v0.8.2 amateur radio receiver */
+.ham-console { padding: 18px; }
+.ham-top-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 10px; }
+.ham-frequency-row { display: grid; grid-template-columns: 54px minmax(220px,620px) 54px; justify-content: center; align-items: center; gap: 10px; margin: 18px auto 12px; }
+.ham-frequency { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: baseline; gap: 10px; padding: 9px 14px; background: #050805; border: 1px solid var(--line-strong); border-radius: 10px; }
+.ham-frequency input { min-width: 0; width: 100%; padding: 0; color: var(--accent); background: transparent; border: 0; outline: 0; text-align: right; font: 700 clamp(34px,5vw,62px)/1 var(--mono); letter-spacing: -.05em; }
+.ham-frequency span { color: var(--dim); font: 700 13px/1 var(--mono); }
+.ham-readout { display: flex; flex-wrap: wrap; justify-content: center; gap: 7px; margin-bottom: 15px; }
+.ham-readout span { padding: 5px 8px; color: var(--muted); background: #0a0f0b; border: 1px solid var(--line); border-radius: 999px; font: 700 9px/1 var(--mono); }
+.ham-actions { display: grid; grid-template-columns: repeat(4,minmax(120px,1fr)); gap: 8px; margin-bottom: 14px; }
+.ham-settings-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; align-items: start; }
+.ham-rit-buttons { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; justify-content: center; }
+.form-row.inactive { opacity: .45; }
+.version-label.version-mismatch { color: var(--red); border-color: rgba(255,92,92,.55); }
+@media (max-width: 900px) {
+  .ham-top-grid, .ham-settings-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .ham-actions { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+@media (max-width: 620px) {
+  .ham-top-grid, .ham-settings-grid { grid-template-columns: 1fr; }
+  .ham-frequency-row { grid-template-columns: 44px minmax(0,1fr) 44px; }
+}

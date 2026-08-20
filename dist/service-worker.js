@@ -1,5 +1,5 @@
 /* Generated cache list is injected by scripts/build.mjs. */
-const CACHE_NAME = "mayhem-rtl-v0.7.0";
+const CACHE_NAME = "mayhem-rtl-v0.8.2";
 const ASSETS = [
   "./assets/dsp_core.wasm",
   "./assets/icon.svg",
@@ -41,12 +41,16 @@ const ASSETS = [
   "./src/diagnostics/package.js",
   "./src/diagnostics/preflight.js",
   "./src/diagnostics/ring-log.js",
+  "./src/dsp/adsb.js",
   "./src/dsp/demodulators.js",
   "./src/dsp/fft.js",
   "./src/panels/mayhem-core.js",
   "./src/panels/mayhem-framebuffer.js",
   "./src/panels/spectrum-waterfall.js",
   "./src/performance/stream-plan.js",
+  "./src/radio/amateur-radio.js",
+  "./src/radio/broadcast-radio.js",
+  "./src/scanner/scanner-controller.js",
   "./src/simulation/simulation-source.js",
   "./src/state/command-queue.js",
   "./src/state/connection-state.js",

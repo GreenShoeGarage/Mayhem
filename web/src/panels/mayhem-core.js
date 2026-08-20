@@ -25,7 +25,7 @@ export class MayhemCoreBridge {
     const result = await WebAssembly.instantiate(await response.arrayBuffer(), {});
     this.instance = result.instance;
     this.memory = this.instance.exports.memory;
-    // Freestanding v0.7 links native file-scope app::Registrar objects. With no
+    // The freestanding core links native file-scope app::Registrar objects. With no
     // WebAssembly start function we invoke static constructors explicitly once.
     this.instance.exports.__wasm_call_ctors?.();
     this.ready = true;

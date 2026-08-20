@@ -12,8 +12,15 @@ test("user-facing version has one package source of truth", async () => {
   assert.match(config, new RegExp(`APP_VERSION = ["']${pkg.version.replaceAll('.', '\\.')}`));
   assert.match(cmake, new RegExp(`VERSION ${pkg.version.replaceAll('.', '\\.')}`));
   const index = await readFile(path.join(root, "web/index.html"), "utf8");
-  assert.ok(!index.includes("v0.1.0") && !index.includes("v0.2.0"));
   assert.ok(index.includes("v__APP_VERSION__"));
+  assert.ok(index.includes(`data-app-version="__APP_VERSION__"`));
+  assert.ok(index.includes(`./src/app.js?v=__APP_VERSION__`));
+  assert.ok(index.includes(`./styles.css?v=__APP_VERSION__`));
+  const app = await readFile(path.join(root, "web/src/app.js"), "utf8");
+  assert.ok(!/v0\.[0-7]\.\d+\s+(?:ACTIVE|DEVELOPMENT BUILD)/i.test(app), "runtime UI must not present an older release as active");
+  assert.ok(!app.includes("v0.6 HARDWARE VALIDATED"), "old milestone badge must not masquerade as the current UI version");
+  assert.match(app, /enforceRuntimeVersionConsistency/);
+  assert.match(app, /!key\.endsWith\(APP_VERSION\)/, "stale-cache cleanup must preserve the executing/current version, not stale HTML");
 });
 
 test("service worker does not serve stale JavaScript version-first", async () => {
@@ -21,4 +28,7 @@ test("service worker does not serve stale JavaScript version-first", async () =>
   assert.match(sw, /cache: "no-store"/);
   assert.match(sw, /versionSensitive/);
   assert.ok(sw.includes("mayhem-rtl-v__APP_VERSION__"));
+  const app = await readFile(path.join(root, "web/src/app.js"), "utf8");
+  assert.match(app, /updateViaCache: "none"/);
+  assert.match(app, /service-worker\.js\?v=/);
 });
