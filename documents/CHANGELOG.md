@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0 — 2026-08-20
+
+- Promoted the build after the first successful physical RTL-SDR bring-up: an `RTL2838UHIDIR` receiver with an R820T/R820T2/R860-family tuner produced live spectrum and waterfall data at 1.024 million samples per second with zero visible dropped samples during the observed session.
+- Added a prominent **RTL-SDR connected — receiver stopped** state with a direct **Start Receiver** action so connection is no longer easy to mistake for active sample streaming.
+- Added a live stream-status banner showing effective sample rate, elapsed time, and reported dropped samples.
+- Added first-class hardware-verification evidence to Diagnostics and diagnostic exports, while keeping sustained soak testing and the multi-device matrix explicitly pending.
+- Updated compatibility messaging to distinguish initial physical bring-up from full hardware qualification.
+- Bumped Progressive Web Application cache, visible version, package version, and About text to v0.2.0.
+
+### Verification status
+
+Initial physical WebUSB bring-up is confirmed on one receiver. The 30-minute 1.024 million-samples-per-second soak, retune/gain/sample-rate changes while receiving, stop/restart, hot-unplug/reconnect, R828D/RTL-SDR Blog V4 validation, R860-specific validation, and wider browser/operating-system matrix remain pending.
+
 ## 0.1.0 — 2026-08-20
 
 - Pinned `mayhem-b200` at `44736b9ca844732e18f35e86eb5beece1d9c2c57`.

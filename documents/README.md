@@ -1,6 +1,6 @@
 # MAYHEM RTL
 
-**MAYHEM RTL v0.1.0** is a browser-native, local-first, receive-only Software-Defined Radio (SDR) workbench for RTL2832U-based RTL-SDR receivers.
+**MAYHEM RTL v0.2.0** is a browser-native, local-first, receive-only Software-Defined Radio (SDR) workbench for RTL2832U-based RTL-SDR receivers.
 
 It is an independent browser-port foundation derived from the architecture and behavior of `mayhem-b200`. It is not an official Mayhem, PortaPack, HackRF, RTL-SDR Blog, or Ettus Research release.
 
@@ -12,7 +12,7 @@ The intended workflow is:
 
 This development release includes a real static browser application, explicit Simulation Mode, direct WebUSB device selection, an RTL2832U/R8xx low-level transport, a bounded sample-processing worker, a small local WebAssembly sample-conversion core, spectrum and waterfall views, project autosave, station presets, local capture, replay import, compatibility reporting, diagnostics export, offline Progressive Web Application support, security headers, and automated tests.
 
-The live RTL-SDR transport is implemented but **not yet verified on physical hardware in the build environment used to create this release**. The interface labels that state honestly. The upstream 240 × 320 Mayhem framebuffer, audio demodulators, scanner, Automatic Dependent Surveillance–Broadcast (ADS-B) decoder, and the wider application suite remain porting work; their launcher entries are visible with accurate states rather than decorative controls.
+The live RTL-SDR transport has now completed an **initial physical hardware bring-up** on an `RTL2838UHIDIR` receiver with an R820T/R820T2/R860-family tuner at 1.024 million samples per second. Live spectrum and waterfall data were observed with zero visible dropped samples during the observed session. This is not yet a sustained soak or broad compatibility claim; the interface and diagnostics distinguish initial bring-up from full hardware qualification. The upstream 240 × 320 Mayhem framebuffer, audio demodulators, scanner, Automatic Dependent Surveillance–Broadcast (ADS-B) decoder, and the wider application suite remain porting work; their launcher entries are visible with accurate states rather than decorative controls.
 
 ## What it is not
 
@@ -45,7 +45,7 @@ Live WebUSB requires a Chromium-based browser with WebUSB support, such as curre
 
 Simulation, project review, diagnostics, and replay can still be used in browsers without WebUSB, subject to their support for WebAssembly, Web Workers, and local storage.
 
-The startup preflight reports each required or optional browser feature. Missing cross-origin isolation does not produce a blank page; this v0.1.0 compatibility path uses transferable buffers. Future high-rate shared-memory builds will require Cross-Origin-Opener-Policy (COOP) and Cross-Origin-Embedder-Policy (COEP).
+The startup preflight reports each required or optional browser feature. Missing cross-origin isolation does not produce a blank page; this v0.2.0 compatibility path uses transferable buffers. Future high-rate shared-memory builds will require Cross-Origin-Opener-Policy (COOP) and Cross-Origin-Embedder-Policy (COEP).
 
 ## Receiver support
 
@@ -160,13 +160,18 @@ MAYHEM RTL is distributed under GNU General Public License version 2.0 or later.
 
 ## Verification performed for this artifact
 
-The v0.1.0 release was built and exercised in Chromium 144. The automated suite passed 11 JavaScript and browser-module tests plus the portable C Digital Signal Processing kernel and receive-only C++ interface tests. A full browser workflow entered explicit simulation, received local sample blocks, committed a multi-megabyte capture with zero reported drops, reopened that capture for paced local replay, verified all 16 launcher entries and both locked transmit entries, rendered diagnostics, and reloaded successfully while Chromium networking was forced offline. No JavaScript exception, browser warning, or application-generated request outside the local origin was observed.
+### Initial physical hardware bring-up
+
+A user-operated `RTL2838UHIDIR` receiver successfully connected through WebUSB, identified conservatively as an R820T/R820T2/R860-family tuner, entered the RECEIVING state at 1.024 Msps, and populated both spectrum and waterfall views. The visible status bar showed zero dropped samples during the observed session. This establishes that the direct browser-to-radio sample path works on at least one physical receiver; it does not replace the planned 30-minute soak or multi-device matrix.
+
+
+The underlying v0.1.0 automated baseline was built and exercised in Chromium 144; v0.2.0 preserves that baseline and adds the hardware-bring-up UX and evidence changes described above. The automated suite passed 11 JavaScript and browser-module tests plus the portable C Digital Signal Processing kernel and receive-only C++ interface tests. A full browser workflow entered explicit simulation, received local sample blocks, committed a multi-megabyte capture with zero reported drops, reopened that capture for paced local replay, verified all 16 launcher entries and both locked transmit entries, rendered diagnostics, and reloaded successfully while Chromium networking was forced offline. No JavaScript exception, browser warning, or application-generated request outside the local origin was observed.
 
 The interface was also reviewed at wide desktop, compact desktop, tablet, and mobile-viewer sizes. See `TEST_RESULTS.md`, `tests/results/`, and `screenshots/` for the exact record. These results do not substitute for physical RTL-SDR testing.
 
-## Known limitations in v0.1.0
+## Known limitations in v0.2.0
 
-- Physical RTL-SDR hardware has not yet been exercised by this build environment.
+- Initial physical RTL-SDR bring-up has succeeded on one `RTL2838UHIDIR` receiver, but the sustained soak, retune/gain/sample-rate mutation tests, hot-unplug/reconnect test, and wider device matrix remain pending.
 - The complete upstream Mayhem framebuffer and application registry are not linked into the current WebAssembly module.
 - AudioWorklet demodulation is scaffolded but disabled until Wideband Frequency Modulation, Narrowband Frequency Modulation, and Amplitude Modulation paths are verified.
 - Automatic Dependent Surveillance–Broadcast, scanner, map/graticule application output, and additional decoders are visible as pending or replay-test targets.

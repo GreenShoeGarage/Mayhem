@@ -2,7 +2,7 @@
 
 Pinned upstream: `wonderingStars/mayhem-b200@44736b9ca844732e18f35e86eb5beece1d9c2c57`
 
-| Component or responsibility | Browser classification | v0.1.0 state | Verification |
+| Component or responsibility | Browser classification | v0.2.0 state | Verification |
 |---|---|---|---|
 | `radio::RadioDevice` contract | Portable with browser backend | Interface preserved; C++ bridge scaffolded | Source-audited, compile-tested |
 | Actual-value-returning setters | Portable | Implemented in JavaScript transport and command queue | Mock-tested |
@@ -17,12 +17,12 @@ Pinned upstream: `wonderingStars/mayhem-b200@44736b9ca844732e18f35e86eb5beece1d9
 | Windows Multimedia / Advanced Linux Sound Architecture | Replaced | AudioWorklet scaffold; audio apps disabled | Not yet verified |
 | WinHTTP telemetry subsystem | Excluded | No telemetry source or endpoint in distribution | No-network audit |
 | Native filesystem | Replaced | Indexed Database and Origin Private File System | Browser API path implemented |
-| RTL2832U WebUSB control | Browser adapter | Implemented for validated Realtek identifiers | Mock-tested; hardware-unverified |
-| R820T/R820T2/R860 family | Browser adapter | R8xx-compatible detection and control | Hardware-unverified |
+| RTL2832U WebUSB control | Browser adapter | Implemented for validated Realtek identifiers | Initial physical bring-up successful; soak/matrix pending |
+| R820T/R820T2/R860 family | Browser adapter | R8xx-compatible detection and control | Initial family-level physical bring-up successful; exact tuner differentiation and wider coverage pending |
 | R828D / RTL-SDR Blog V4 profile | Browser adapter | Detection and input-switching profile implemented | Hardware-unverified |
-| Raw unsigned 8-bit IQ receive | Browser adapter | Bounded transfer pump and worker ingestion | Mock/simulation-tested |
+| Raw unsigned 8-bit IQ receive | Browser adapter | Bounded transfer pump and worker ingestion | Live hardware receive observed at 1.024 Msps; sustained soak pending |
 | Byte-to-complex conversion | Portable DSP kernel | Local WebAssembly kernel plus JavaScript fallback | Unit-tested |
-| Spectrum / waterfall | Portable with browser renderer | Implemented | Simulation-tested |
+| Spectrum / waterfall | Portable with browser renderer | Implemented | Simulation-tested and live hardware-observed |
 | Wideband Frequency Modulation audio | Portable DSP + AudioWorklet | Port pending; launcher visible and locked | Not claimed |
 | Narrowband Frequency Modulation audio | Portable DSP + AudioWorklet | Port pending; launcher visible and locked | Not claimed |
 | Amplitude Modulation audio | Portable DSP + AudioWorklet | Port pending; launcher visible and locked | Not claimed |

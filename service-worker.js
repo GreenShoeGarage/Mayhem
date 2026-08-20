@@ -1,5 +1,5 @@
 /* Generated cache list is injected by scripts/build.mjs. */
-const CACHE_NAME = "mayhem-rtl-v0.1.0";
+const CACHE_NAME = "mayhem-rtl-v0.2.0";
 const ASSETS = [
   "./assets/dsp_core.wasm",
   "./assets/icon.svg",

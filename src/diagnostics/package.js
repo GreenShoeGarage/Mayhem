@@ -1,4 +1,4 @@
-import { APP_NAME, APP_VERSION, UPSTREAM_COMMIT, WEBRTLSDR_COMMIT } from "../config.js";
+import { APP_NAME, APP_VERSION, HARDWARE_VERIFICATION, UPSTREAM_COMMIT, WEBRTLSDR_COMMIT } from "../config.js";
 
 function clean(value) {
   if (value === undefined) return undefined;
@@ -28,6 +28,7 @@ export function createDiagnosticPackage({ preflight, browser, connection, device
     connection: clean(connection),
     device: safeDevice,
     receiver: clean(receiver),
+    hardwareVerification: clean(HARDWARE_VERIFICATION),
     stream: clean(stream),
     processing: clean(processing),
     capture: clean(capture),

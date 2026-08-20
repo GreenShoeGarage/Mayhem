@@ -1,9 +1,27 @@
 # Test results
 
-Version: 0.1.0  
+Version: 0.2.0  
 Upstream commit: `44736b9ca844732e18f35e86eb5beece1d9c2c57`  
 Web RTL-SDR reference commit: `5699cec220cb0349e8f9144b7b71d3d03b5d9dbf`  
 Executed: `2026-08-20T02:35:38Z`
+
+
+## v0.2.0 hardware bring-up supplement
+
+A physical `RTL2838UHIDIR` receiver was connected by the user through the browser WebUSB path on 2026-08-19. The application identified the tuner conservatively as the R820T/R820T2/R860 family, entered `RECEIVING`, reported a 1.024 Msps rate, rendered live spectrum and waterfall data, and showed zero dropped samples in the visible status strip during the observed session. This is recorded as **initial hardware bring-up successful**, not as completion of the sustained soak or multi-device compatibility matrix.
+
+The v0.2.0 automated suite adds regression coverage for hardware-verification metadata, diagnostics export of that evidence, and live receiver start/stop transitions using a controlled fake RTL device. The full automated suite now reports **14 JavaScript/browser-module tests passed**, plus the portable C Digital Signal Processing kernel, receive-only C++ contract tests, production WebAssembly build, and no-network distribution audit.
+
+Still pending before Batch 1 can be considered fully qualified:
+
+- retune while receiving;
+- automatic/manual gain changes on physical hardware;
+- sample-rate changes on physical hardware;
+- stop and restart without reconnecting;
+- hot-unplug and reconnect recovery;
+- 30-minute 1.024 Msps soak below the 0.5 percent drop threshold;
+- R828D / RTL-SDR Blog V4 validation;
+- wider browser and operating-system matrix.
 
 ## Verification boundary
 
@@ -28,7 +46,7 @@ npm test
 
 Results:
 
-- 11 JavaScript and browser-module tests passed.
+- 14 JavaScript and browser-module tests passed.
 - Portable C Digital Signal Processing kernel tests passed.
 - Receive-only C++ `RadioDevice` contract tests passed.
 - The production build completed with a real local WebAssembly module at `dist/assets/dsp_core.wasm`.

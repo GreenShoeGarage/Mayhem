@@ -1,4 +1,4 @@
-import { APP_NAME, APP_VERSION, DEFAULT_SETTINGS, UPSTREAM_COMMIT, WEBRTLSDR_COMMIT } from "./config.js";
+import { APP_NAME, APP_VERSION, DEFAULT_SETTINGS, HARDWARE_VERIFICATION, UPSTREAM_COMMIT, WEBRTLSDR_COMMIT } from "./config.js";
 import { APPLICATIONS, evaluateApplication } from "./apps/compatibility-manifest.js";
 import { RingLog } from "./diagnostics/ring-log.js";
 import { browserSummary, runPreflight } from "./diagnostics/preflight.js";
@@ -103,6 +103,34 @@ function activeStreamStats() {
   return sourceStats;
 }
 
+function liveVerificationPresentation() {
+  if (sourceType !== "live" || !radio.device) return { label: "Not applicable", className: "neutral" };
+  if (sourceRunning && (radio.stats?.blocks ?? 0) > 0) return { label: "Live samples confirmed", className: "ready" };
+  return { label: "Connected; receiver stopped", className: "pending" };
+}
+
+function updateReceiverRunStatus() {
+  const host = $("receiverRunStatus");
+  if (!host) return;
+  const stats = activeStreamStats();
+  if (sourceType === "live" && radio.device && !sourceRunning) {
+    host.className = "notice-box warning receiver-run-status";
+    host.innerHTML = `<strong>RTL-SDR connected — receiver stopped</strong><p>The device is initialized, but no sample transfers are running yet. Start Receiver to feed the spectrum and waterfall.</p><button id="receiverRunStart" class="primary-button" type="button">Start Receiver</button>`;
+    $("receiverRunStart")?.addEventListener("click", startSource);
+    return;
+  }
+  if (sourceRunning) {
+    const dropped = Number(stats.ringDrops ?? 0);
+    const rate = Number(stats.effectiveSampleRate ?? 0);
+    const elapsed = stats.startedAt ? Math.max(0, (Date.now() - new Date(stats.startedAt).getTime()) / 1000) : 0;
+    host.className = `notice-box receiver-run-status ${dropped ? "warning" : "success"}`;
+    host.innerHTML = `<strong>${sourceType === "live" ? "Live sample stream active" : sourceType === "simulation" ? "Simulation stream active" : "Replay stream active"}</strong><p>${formatRate(rate || effectiveActual().sampleRate)} effective · ${formatDuration(elapsed)} elapsed · ${dropped} dropped samples reported.</p>`;
+    return;
+  }
+  host.className = "notice-box receiver-run-status";
+  host.innerHTML = `<strong>No active sample stream</strong><p>Choose or start a source to populate the spectrum and waterfall.</p>`;
+}
+
 function connectedCaps() {
   if (sourceType === "live" && radio.device) return radio.caps;
   if (sourceType === "simulation") return { hasRx: true, hasTx: false, minFrequencyHz: 0, maxFrequencyHz: Infinity, maxSampleRate: Infinity };
@@ -176,6 +204,7 @@ function updateGlobalStatus() {
     levelDbfs: sourceStats.levelDbfs,
     source: sourceType
   });
+  updateReceiverRunStatus();
 }
 
 function updateSourceStatistics(block) {
@@ -338,7 +367,7 @@ function renderHome() {
     <div class="workflow-strip" aria-label="Fundamental workflow"><span class="workflow-step active">CONNECT</span><span class="workflow-step">TUNE</span><span class="workflow-step">INSPECT</span><span class="workflow-step">DEMODULATE</span><span class="workflow-step">DECODE</span><span class="workflow-step">CAPTURE</span><span class="workflow-step">REVIEW</span><span class="workflow-step">EXPORT</span></div>
     <div class="grid two">
       <article class="card"><div class="card-title-row"><div><span class="eyebrow">PREFLIGHT</span><h2>Browser and hosting</h2></div><span class="badge ${preflight.ok ? "ready" : "locked"}">${preflight.ok ? "READY" : "ACTION REQUIRED"}</span></div><p>The live-radio path requires a secure context, Web Universal Serial Bus (WebUSB), WebAssembly, and a processing worker. Shared memory is optional in this compatibility build.</p><div id="homePreflight" class="preflight-list"></div></article>
-      <article class="card"><div class="card-title-row"><div><span class="eyebrow">DEVELOPMENT TRUTH</span><h2>Version 0.1.0 boundary</h2></div><span class="badge partial">FOUNDATION</span></div><p>Direct WebUSB transport, simulation, replay, capture storage, diagnostics, spectrum, and waterfall are implemented. The authentic upstream Mayhem framebuffer, audio demodulators, scanner, and Automatic Dependent Surveillance–Broadcast decoder remain visibly pending.</p><div class="metric-grid"><div class="metric"><span class="label">Upstream</span><strong class="value">44736b9c</strong></div><div class="metric"><span class="label">Transport reference</span><strong class="value">5699cec2</strong></div><div class="metric"><span class="label">Network</span><strong class="value">local only</strong></div><div class="metric"><span class="label">Transmit</span><strong class="value">unavailable</strong></div></div></article>
+      <article class="card"><div class="card-title-row"><div><span class="eyebrow">DEVELOPMENT TRUTH</span><h2>Version 0.2.0 hardware bring-up</h2></div><span class="badge ready">INITIAL HARDWARE VERIFIED</span></div><p>Direct WebUSB reception has now produced live spectrum and waterfall data on physical RTL2838UHIDIR hardware at 1.024 million samples per second. Sustained soak testing, wider tuner coverage, audio demodulators, scanner, Automatic Dependent Surveillance–Broadcast decoding, and the authentic upstream Mayhem framebuffer remain pending.</p><div class="metric-grid"><div class="metric"><span class="label">Upstream</span><strong class="value">44736b9c</strong></div><div class="metric"><span class="label">Transport reference</span><strong class="value">5699cec2</strong></div><div class="metric"><span class="label">Network</span><strong class="value">local only</strong></div><div class="metric"><span class="label">Transmit</span><strong class="value">unavailable</strong></div></div></article>
     </div>
     <div class="grid three">
       <article class="card"><span class="eyebrow">LIVE</span><h2>RTL2832U through WebUSB</h2><p>Permission begins only from the Connect button. Device descriptors are validated before vendor control transfers are issued.</p><div class="card-actions"><button id="homeConnect2" class="primary-button" type="button">Connect RTL-SDR</button></div></article>
@@ -357,6 +386,7 @@ function renderHome() {
 function renderReceiver() {
   staticView(`<section class="view">
     ${pageHeading("RECEIVER", "Inspect the active source", "Spectrum and waterfall share one receiver state. Visualization can be paused without stopping sample processing.", `<button id="receiverSourceButton" class="secondary-button" type="button">${sourceType === "none" ? "Choose source" : "Disconnect source"}</button>`)}
+    <div id="receiverRunStatus" class="notice-box receiver-run-status" aria-live="polite"></div>
     <div class="receiver-layout">
       <div class="instrument-stack">
         <section class="instrument-panel"><header class="panel-header"><span class="panel-title">Spectrum</span><div class="panel-tools"><button id="pauseDisplay" class="toolbar-button" type="button">Pause display</button><button id="clearPeak" class="toolbar-button" type="button">Clear peak</button><button id="exportScreenshot" class="toolbar-button" type="button">Screenshot</button></div></header><div class="canvas-wrap"><canvas id="spectrumCanvas"></canvas></div></section>
@@ -384,6 +414,7 @@ function renderReceiver() {
   $("quickStation").addEventListener("click", saveCurrentStation);
   $("receiverSourceButton").addEventListener("click", () => sourceType === "none" ? navigate("home") : disconnectSource());
   updateReceiverButtons();
+  updateReceiverRunStatus();
 }
 
 function bindSpectrumInteractions() {
@@ -629,6 +660,7 @@ async function renderDiagnostics() {
     diagnosticCard("Browser", { "User agent": browser.browser, Platform: browser.platform, "Secure context": String(isSecureContext), WebUSB: navigator.usb ? "available" : "unavailable", "Cross-origin isolated": String(crossOriginIsolated), WebAssembly: typeof WebAssembly, "Processing mode": processing?.wasmMode || "unavailable", AudioWorklet: typeof AudioWorkletNode === "function" ? "available" : "unavailable", "Service worker": navigator.serviceWorker ? "available" : "unavailable" }),
     diagnosticCard("Device", { "Connection state": stateMachine.state, Source: sourceType, "Vendor identifier": device.vendorId != null ? `0x${Number(device.vendorId).toString(16).padStart(4, "0")}` : "—", "Product identifier": device.productId != null ? `0x${Number(device.productId).toString(16).padStart(4, "0")}` : "—", Product: device.productName || "—", Tuner: radio.caps.tuner || "—", Frequency: formatFrequency(actual.frequencyHz, 6), "Sample rate": formatRate(actual.sampleRate), Gain: actual.gainDb == null ? "automatic" : `${actual.gainDb} dB`, "Correction": `${actual.ppm ?? 0} ppm`, "Bias tee": radio.actual.biasTee ? "enabled" : "disabled" }),
     diagnosticCard("Stream", streamDefinition(activeStreamStats())),
+    diagnosticCard("Hardware verification", { Status: HARDWARE_VERIFICATION.label, Source: HARDWARE_VERIFICATION.source, Observed: HARDWARE_VERIFICATION.observedAt, Device: HARDWARE_VERIFICATION.deviceProduct, Tuner: HARDWARE_VERIFICATION.tunerFamily, "Observed rate": formatRate(HARDWARE_VERIFICATION.sampleRate), "Observed drops": String(HARDWARE_VERIFICATION.observedDroppedSamples), "Verified now": liveVerificationPresentation().label, Pending: HARDWARE_VERIFICATION.pendingChecks.join("; ") }),
     diagnosticCard("Application", { Active: APPLICATIONS.find((entry) => entry.id === activeApplicationId)?.name || activeApplicationId, "Port state": APPLICATIONS.find((entry) => entry.id === activeApplicationId)?.portState || "—", Verification: APPLICATIONS.find((entry) => entry.id === activeApplicationId)?.verificationState || "—", "Worker time": processingStats.workerTimeMs == null ? "—" : `${processingStats.workerTimeMs.toFixed(2)} ms`, "Source latency": processingStats.sourceLatencyMs == null ? "—" : `${processingStats.sourceLatencyMs.toFixed(2)} ms`, "Worker sequence gaps": String(processingStats.sequenceGaps), "Capture backlog": String(captureStore?.activeStatus?.backlog ?? 0), "Last error": log.toJSON().filter((entry) => entry.level === "error").at(-1)?.message || "none" })
   );
   $("diagnosticLog").textContent = log.toText() || "No diagnostic events recorded.";
@@ -751,7 +783,7 @@ function bindInspectorControls() {
 }
 
 function renderDiagnosticsInspector() {
-  staticInspector("Evidence", `<section class="inspector-section"><h3>Export privacy</h3><div class="switch-row"><div><strong>Include serial number</strong><div class="field-help">Disabled by default.</div></div><label class="switch"><input id="diagSerialToggle" type="checkbox" ${projectStore.project.diagnosticPreferences.includeSerialOnExport ? "checked" : ""}><span></span></label></div><button id="diagExportInspector" class="primary-button" type="button">Export Diagnostics</button></section><section class="inspector-section"><h3>Verification</h3><dl class="definition-list"><div><dt>Live radio</dt><dd>not hardware-tested here</dd></div><div><dt>Simulation</dt><dd>automated fixtures</dd></div><div><dt>Replay</dt><dd>local deterministic path</dd></div></dl></section>`);
+  staticInspector("Evidence", `<section class="inspector-section"><h3>Export privacy</h3><div class="switch-row"><div><strong>Include serial number</strong><div class="field-help">Disabled by default.</div></div><label class="switch"><input id="diagSerialToggle" type="checkbox" ${projectStore.project.diagnosticPreferences.includeSerialOnExport ? "checked" : ""}><span></span></label></div><button id="diagExportInspector" class="primary-button" type="button">Export Diagnostics</button></section><section class="inspector-section"><h3>Verification</h3><dl class="definition-list"><div><dt>Live radio</dt><dd>${HARDWARE_VERIFICATION.label}</dd></div><div><dt>Current session</dt><dd>${liveVerificationPresentation().label}</dd></div><div><dt>Simulation</dt><dd>automated fixtures</dd></div><div><dt>Replay</dt><dd>local deterministic path</dd></div></dl><div class="field-help">Initial physical bring-up is not the same as completing the 30-minute soak or multi-device compatibility matrix.</div></section>`);
   $("diagSerialToggle").addEventListener("change", (event) => projectStore.update((project) => { project.diagnosticPreferences.includeSerialOnExport = event.target.checked; }));
   $("diagExportInspector").addEventListener("click", exportDiagnostics);
 }
