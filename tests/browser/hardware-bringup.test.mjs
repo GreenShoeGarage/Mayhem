@@ -16,7 +16,7 @@ test("hardware verification metadata records completed soak checks and remaining
   assert.ok(HARDWARE_VERIFICATION.verifiedCapabilities.includes("waterfall"));
   assert.ok(HARDWARE_VERIFICATION.verifiedCapabilities.includes("30-minute 1.024 Msps soak"));
   assert.ok(HARDWARE_VERIFICATION.verifiedCapabilities.includes("2.4 Msps / 60-minute soak"));
-  assert.ok(HARDWARE_VERIFICATION.pendingChecks.includes("v0.8.2 USB/LSB/CW on-air validation"));
+  assert.ok(HARDWARE_VERIFICATION.pendingChecks.includes("USB/LSB/CW on-air validation"));
   assert.ok(HARDWARE_VERIFICATION.pendingChecks.includes("multi-device matrix"));
 });
 

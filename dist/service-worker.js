@@ -1,5 +1,5 @@
 /* Generated cache list is injected by scripts/build.mjs. */
-const CACHE_NAME = "mayhem-rtl-v0.8.2";
+const CACHE_NAME = "mayhem-rtl-v0.8.11";
 const ASSETS = [
   "./assets/dsp_core.wasm",
   "./assets/icon.svg",
@@ -32,6 +32,7 @@ const ASSETS = [
   "./documents/test-results/responsive-smoke-v0.1.0.json",
   "./index.html",
   "./manifest.webmanifest",
+  "./src/analysis/signal-analysis.js",
   "./src/app.js",
   "./src/apps/compatibility-manifest.js",
   "./src/apps/generated-registry.js",
@@ -43,10 +44,17 @@ const ASSETS = [
   "./src/diagnostics/ring-log.js",
   "./src/dsp/adsb.js",
   "./src/dsp/demodulators.js",
+  "./src/dsp/digital-decoders.js",
   "./src/dsp/fft.js",
+  "./src/dsp/paging-decoders.js",
+  "./src/dsp/pocsag.js",
+  "./src/dsp/sstv.js",
+  "./src/dsp/subghz-telemetry.js",
+  "./src/dsp/tracking-decoders.js",
   "./src/panels/mayhem-core.js",
   "./src/panels/mayhem-framebuffer.js",
   "./src/panels/spectrum-waterfall.js",
+  "./src/panels/time-sink.js",
   "./src/performance/stream-plan.js",
   "./src/radio/amateur-radio.js",
   "./src/radio/broadcast-radio.js",

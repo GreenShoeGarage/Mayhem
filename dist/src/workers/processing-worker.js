@@ -1,6 +1,12 @@
 import { spectrumDb } from "../dsp/fft.js";
 import { AudioDemodulator, recommendedAudioBandwidth, rms } from "../dsp/demodulators.js";
 import { AdsbIqDecoder } from "../dsp/adsb.js";
+import { PocsagIqDecoder } from "../dsp/pocsag.js";
+import { AfskTerminalIqDecoder, AprsIqDecoder, AcarsIqDecoder, RttyIqDecoder, MorseIqDecoder } from "../dsp/digital-decoders.js";
+import { SubGhzTelemetryDecoder } from "../dsp/subghz-telemetry.js";
+import { Flex1600IqDecoder, TwoToneIqDecoder } from "../dsp/paging-decoders.js";
+import { AisIqDecoder, Rs41IqDecoder, EpirbIqDecoder, EPIRB_IF_OFFSET_HZ } from "../dsp/tracking-decoders.js";
+import { SstvIqDecoder } from "../dsp/sstv.js";
 
 let wasm = null;
 let wasmMode = "javascript-fallback";
@@ -24,7 +30,31 @@ let settings = {
   ritHz: 0,
   cwPitchHz: 700,
   agcMode: "medium",
-  decoderMode: "none"
+  decoderMode: "none",
+  pocsagBaudRate: "auto",
+  afskProfile: "bell202",
+  afskReverse: false,
+  aprsReverse: false,
+  acarsChannelOffsetHz: -12000,
+  rttyProfile: "eu",
+  rttySideband: "usb",
+  rttyReverse: false,
+  morseWpm: 20,
+  morsePitchHz: 700,
+  morseThreshold: 0.035,
+  morseChannelOffsetHz: -2000,
+  timeSinkEnabled: false,
+  timeSinkPoints: 512,
+  telemetryMode: "none",
+  pagingMode: "none",
+  trackingMode: "none",
+  sstvEnabled: false,
+  sstvRfMode: "fm",
+  sstvMode: "martin1",
+  sstvAutoVis: true,
+  sstvPhaseOffset: 0,
+  sstvSlant: 0,
+  sstvChannelOffsetHz: 0
 };
 let averageSpectrum = null;
 let peakSpectrum = null;
@@ -37,6 +67,29 @@ let audioFramesProduced = 0;
 let audioSamplesProduced = 0;
 const audioDemodulator = new AudioDemodulator(settings);
 const adsbDecoder = new AdsbIqDecoder({ sampleRate: 2_400_000 });
+const pocsagDecoder = new PocsagIqDecoder({ sampleRate: 1_024_000, baudRate: "auto" });
+const digitalDecoders = {
+  afsk: new AfskTerminalIqDecoder({ sampleRate: 1_024_000 }),
+  aprs: new AprsIqDecoder({ sampleRate: 1_024_000 }),
+  acars: new AcarsIqDecoder({ sampleRate: 1_024_000, channelOffsetHz: -12_000 }),
+  rtty: new RttyIqDecoder({ sampleRate: 1_024_000 }),
+  morse: new MorseIqDecoder({ sampleRate: 1_024_000 })
+};
+const telemetryDecoder = new SubGhzTelemetryDecoder({ sampleRate: 1_024_000, mode: "weather" });
+const pagingDecoders = { flex: new Flex1600IqDecoder({ sampleRate: 1_024_000 }), twotone: new TwoToneIqDecoder({ sampleRate: 1_024_000 }) };
+const trackingDecoders = {
+  ais: new AisIqDecoder({ sampleRate: 1_024_000 }),
+  radiosonde: new Rs41IqDecoder({ sampleRate: 1_024_000 }),
+  epirb: new EpirbIqDecoder({ sampleRate: 1_024_000, offsetHz: EPIRB_IF_OFFSET_HZ })
+};
+const sstvDecoder = new SstvIqDecoder({ sampleRate: 1_024_000, rfMode: "fm", mode: "martin1", autoVis: true });
+let lastTelemetryStatusAt = 0;
+let lastPocsagStatusAt = 0;
+let lastDigitalStatusAt = 0;
+let lastTimeSinkAt = 0;
+let lastPagingStatusAt = 0;
+let lastTrackingStatusAt = 0;
+let lastSstvStatusAt = 0;
 
 function align16(value) { return (value + 15) & ~15; }
 
@@ -137,6 +190,24 @@ function processAudio(converted, sampleRate, levelDbfs) {
   postMessage({ type: "audio", samples, mode, outputRate: Number(settings.audioOutputRate) || 48000, squelchOpen, levelRms, audioFramesProduced, audioSamplesProduced }, [samples.buffer]);
 }
 
+
+function processTimeSink(converted, sampleRate, frequency) {
+  if (!settings.timeSinkEnabled) return;
+  const now = performance.now();
+  if (now - lastTimeSinkAt < 80) return;
+  lastTimeSinkAt = now;
+  const points = Math.max(64, Math.min(2048, Math.round(Number(settings.timeSinkPoints) || 512)));
+  const available = converted.i.length;
+  const i = new Float32Array(points);
+  const q = new Float32Array(points);
+  for (let index = 0; index < points; index += 1) {
+    const source = Math.min(available - 1, Math.floor(index * available / points));
+    i[index] = converted.i[source];
+    q[index] = converted.q[source];
+  }
+  postMessage({ type: "timeseries", i, q, sampleRate, frequency, sourceSamples: available }, [i.buffer, q.buffer]);
+}
+
 function processBlock(message, bytes) {
   const started = performance.now();
   const { sequence, sampleRate, frequency, receivedAt, sharedSlot } = message;
@@ -152,10 +223,96 @@ function processBlock(message, bytes) {
   processedBlocks += 1;
   const levelDbfs = 10 * Math.log10(Math.max(1e-12, converted.power / 2));
   processAudio(converted, sampleRate, levelDbfs);
+  processTimeSink(converted, sampleRate, frequency);
   if (settings.decoderMode === "adsb" && sampleRate >= 2_000_000) {
     adsbDecoder.configure({ sampleRate });
     const decodedFrames = adsbDecoder.process(converted.i, converted.q, { receivedAtMs: Date.now() });
     for (const frame of decodedFrames) postMessage({ type: "adsb", frame });
+  }
+  if (settings.decoderMode === "pocsag") {
+    pocsagDecoder.configure({ sampleRate, baudRate: settings.pocsagBaudRate ?? "auto" });
+    const decodedPages = pocsagDecoder.process(converted.i, converted.q, { receivedAtMs: Date.now() });
+    for (const page of decodedPages) postMessage({ type: "pocsag", page });
+    const now = performance.now();
+    if (now - lastPocsagStatusAt >= 400) {
+      lastPocsagStatusAt = now;
+      postMessage({ type: "pocsag-status", status: pocsagDecoder.snapshot() });
+    }
+  }
+
+  if (["tpms", "weather"].includes(settings.telemetryMode)) {
+    telemetryDecoder.configure({ sampleRate, mode: settings.telemetryMode });
+    const telemetryEvents = telemetryDecoder.process(converted.i, converted.q, { receivedAtMs: Date.now() });
+    for (const event of telemetryEvents) postMessage({ type: "telemetry", mode: settings.telemetryMode, event });
+    const nowTelemetry = performance.now();
+    if (nowTelemetry - lastTelemetryStatusAt >= 500) {
+      lastTelemetryStatusAt = nowTelemetry;
+      postMessage({ type: "telemetry-status", mode: settings.telemetryMode, status: telemetryDecoder.snapshot() });
+    }
+  }
+
+  if (["flex", "twotone"].includes(settings.pagingMode)) {
+    const mode = settings.pagingMode;
+    const decoder = pagingDecoders[mode];
+    decoder.configure({ sampleRate });
+    const events = decoder.process(converted.i, converted.q, { receivedAtMs: Date.now() });
+    for (const event of events) postMessage({ type: "paging", mode, event });
+    const nowPaging = performance.now();
+    if (nowPaging - lastPagingStatusAt >= 500) {
+      lastPagingStatusAt = nowPaging;
+      postMessage({ type: "paging-status", mode, status: decoder.snapshot() });
+    }
+  }
+
+
+  if (["ais", "radiosonde", "epirb"].includes(settings.trackingMode)) {
+    const mode = settings.trackingMode;
+    const decoder = trackingDecoders[mode];
+    if (mode === "ais") decoder.configure({ sampleRate });
+    else if (mode === "radiosonde") decoder.configure({ sampleRate, frequencyHz: frequency });
+    else decoder.configure({ sampleRate, offsetHz: EPIRB_IF_OFFSET_HZ, frequencyHz: Number(frequency) + EPIRB_IF_OFFSET_HZ });
+    const decoded = decoder.process(converted.i, converted.q, {
+      receivedAtMs: Date.now(),
+      frequencyHz: mode === "epirb" ? Number(frequency) + EPIRB_IF_OFFSET_HZ : frequency
+    });
+    for (const event of decoded) postMessage({ type: "tracking", mode, event });
+    const nowTracking = performance.now();
+    if (nowTracking - lastTrackingStatusAt >= 500) {
+      lastTrackingStatusAt = nowTracking;
+      postMessage({ type: "tracking-status", mode, status: decoder.snapshot() });
+    }
+  }
+  if (settings.sstvEnabled) {
+    // Decoder configuration is applied on init/settings messages, not once per
+    // IQ block. SSTV depends on minute-scale timing continuity; resetting the
+    // VIS/line state at every USB block would make a live image impossible.
+    const decoded = sstvDecoder.process(converted.i, converted.q, { receivedAtMs: Date.now() });
+    for (const event of decoded) {
+      if (event.type === "line" && event.rgb instanceof Uint8Array) postMessage({ type: "sstv", event }, [event.rgb.buffer]);
+      else postMessage({ type: "sstv", event });
+    }
+    const nowSstv = performance.now();
+    if (nowSstv - lastSstvStatusAt >= 500) {
+      lastSstvStatusAt = nowSstv;
+      postMessage({ type: "sstv-status", status: sstvDecoder.snapshot() });
+    }
+  }
+
+  if (["afsk", "aprs", "acars", "rtty", "morse"].includes(settings.decoderMode)) {
+    const mode = settings.decoderMode;
+    const decoder = digitalDecoders[mode];
+    if (mode === "afsk") decoder.configure({ sampleRate, profile: settings.afskProfile ?? "bell202", reverse: Boolean(settings.afskReverse) });
+    else if (mode === "aprs") decoder.configure({ sampleRate, reverse: Boolean(settings.aprsReverse) });
+    else if (mode === "acars") decoder.configure({ sampleRate, channelOffsetHz: Number(settings.acarsChannelOffsetHz ?? -12000) });
+    else if (mode === "rtty") decoder.configure({ sampleRate, profile: settings.rttyProfile ?? "eu", sideband: settings.rttySideband ?? "usb", reverse: Boolean(settings.rttyReverse) });
+    else decoder.configure({ sampleRate, wpm: Number(settings.morseWpm ?? 20), pitchHz: Number(settings.morsePitchHz ?? settings.cwPitchHz ?? 700), threshold: Number(settings.morseThreshold ?? 0.035), channelOffsetHz: Number(settings.morseChannelOffsetHz ?? -2000) });
+    const decoded = decoder.process(converted.i, converted.q, { sampleRate, channelOffsetHz: Number(settings.acarsChannelOffsetHz ?? -12000) });
+    for (const event of decoded) postMessage({ type: "digital", mode, event });
+    const now = performance.now();
+    if (now - lastDigitalStatusAt >= 400) {
+      lastDigitalStatusAt = now;
+      postMessage({ type: "digital-status", mode, status: decoder.snapshot() });
+    }
   }
 
   const stride = Math.max(1, Math.min(8, Math.round(Number(settings.spectrumStride) || 1)));
@@ -224,12 +381,33 @@ self.addEventListener("message", async (event) => {
     }
     audioDemodulator.configure(settings);
     adsbDecoder.configure({ sampleRate: Number(settings.sampleRate) || 2_400_000 });
+    pocsagDecoder.configure({ sampleRate: Number(settings.sampleRate) || 1_024_000, baudRate: settings.pocsagBaudRate ?? "auto" });
+    digitalDecoders.afsk.configure({ sampleRate: Number(settings.sampleRate) || 1_024_000, profile: settings.afskProfile ?? "bell202", reverse: Boolean(settings.afskReverse) });
+    digitalDecoders.aprs.configure({ sampleRate: Number(settings.sampleRate) || 1_024_000, reverse: Boolean(settings.aprsReverse) });
+    digitalDecoders.acars.configure({ sampleRate: Number(settings.sampleRate) || 1_024_000, channelOffsetHz: Number(settings.acarsChannelOffsetHz ?? -12000) });
+    digitalDecoders.rtty.configure({ sampleRate: Number(settings.sampleRate) || 1_024_000, profile: settings.rttyProfile ?? "eu", sideband: settings.rttySideband ?? "usb", reverse: Boolean(settings.rttyReverse) });
+    digitalDecoders.morse.configure({ sampleRate: Number(settings.sampleRate) || 1_024_000, wpm: Number(settings.morseWpm ?? 20), pitchHz: Number(settings.morsePitchHz ?? 700), threshold: Number(settings.morseThreshold ?? 0.035), channelOffsetHz: Number(settings.morseChannelOffsetHz ?? -2000) });
+    telemetryDecoder.configure({ sampleRate: Number(settings.sampleRate) || 1_024_000, mode: settings.telemetryMode === "tpms" ? "tpms" : "weather" });
+    Object.values(pagingDecoders).forEach((decoder) => decoder.configure({ sampleRate: Number(settings.sampleRate) || 1_024_000 }));
+    Object.values(trackingDecoders).forEach((decoder) => decoder.configure({ sampleRate: Number(settings.sampleRate) || 1_024_000 }));
+    sstvDecoder.configure({ sampleRate: Number(settings.sampleRate) || 1_024_000, rfMode: settings.sstvRfMode ?? "fm", mode: settings.sstvMode ?? "martin1", autoVis: settings.sstvAutoVis !== false, phaseOffset: Number(settings.sstvPhaseOffset ?? 0), slant: Number(settings.sstvSlant ?? 0), channelOffsetHz: Number(settings.sstvChannelOffsetHz ?? 0) });
     await initializeWasm(message.wasmUrl);
     postMessage({ type: "ready", wasmMode, settings, sharedMemory: Boolean(sharedPool) });
   } else if (message.type === "settings") {
     settings = { ...settings, ...message.settings };
     audioDemodulator.configure(settings);
     adsbDecoder.configure({ sampleRate: Number(settings.sampleRate) || adsbDecoder.sampleRate });
+    pocsagDecoder.configure({ sampleRate: Number(settings.sampleRate) || pocsagDecoder.sampleRate, baudRate: settings.pocsagBaudRate ?? pocsagDecoder.baudRate });
+    sstvDecoder.configure({
+      sampleRate: Number(settings.sampleRate) || 1_024_000,
+      rfMode: settings.sstvRfMode ?? "fm",
+      mode: settings.sstvMode ?? "martin1",
+      autoVis: settings.sstvAutoVis !== false,
+      phaseOffset: Number(settings.sstvPhaseOffset ?? 0),
+      slant: Number(settings.sstvSlant ?? 0),
+      channelOffsetHz: Number(settings.sstvChannelOffsetHz ?? 0)
+    });
+    if (message.resetDecoder) { pocsagDecoder.reset(); Object.values(digitalDecoders).forEach((decoder) => decoder.reset()); telemetryDecoder.reset(); Object.values(pagingDecoders).forEach((decoder) => decoder.reset()); Object.values(trackingDecoders).forEach((decoder) => decoder.reset()); sstvDecoder.reset(); }
     if (message.resetAveraging) { averageSpectrum = null; peakSpectrum = null; }
     if (message.resetAudio) audioDemodulator.reset();
     postMessage({ type: "settings-applied", settings });
@@ -245,6 +423,18 @@ self.addEventListener("message", async (event) => {
       processBlock(message, new Uint8Array(sharedPool.buffer, slot * sharedPool.slotBytes, length));
     }
   } else if (message.type === "reset") {
+    pocsagDecoder.reset();
+    Object.values(digitalDecoders).forEach((decoder) => decoder.reset());
+    telemetryDecoder.reset();
+    Object.values(pagingDecoders).forEach((decoder) => decoder.reset());
+    Object.values(trackingDecoders).forEach((decoder) => decoder.reset());
+    sstvDecoder.reset();
+    lastTelemetryStatusAt = 0;
+    lastPagingStatusAt = 0;
+    lastTrackingStatusAt = 0;
+    lastSstvStatusAt = 0;
+    lastPocsagStatusAt = 0;
+    lastTimeSinkAt = 0;
     averageSpectrum = null;
     peakSpectrum = null;
     lastSequence = -1;
@@ -255,6 +445,7 @@ self.addEventListener("message", async (event) => {
     audioSamplesProduced = 0;
     audioDemodulator.reset();
     adsbDecoder.reset();
+    lastDigitalStatusAt = 0;
     postMessage({ type: "reset-complete" });
   }
 });

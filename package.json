@@ -1,6 +1,6 @@
 {
   "name": "mayhem-rtl-web",
-  "version": "0.8.2",
+  "version": "0.8.11",
   "private": true,
   "type": "module",
   "description": "Browser-native, receive-only RTL-SDR port foundation for mayhem-b200.",

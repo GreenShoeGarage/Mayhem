@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(mayhem_rtl_web VERSION 0.8.2 LANGUAGES C CXX)
+project(mayhem_rtl_web VERSION 0.8.11 LANGUAGES C CXX)
 
 option(MB200_WEB "Build the browser-native MAYHEM RTL target" OFF)
 set(CMAKE_CXX_STANDARD 20)

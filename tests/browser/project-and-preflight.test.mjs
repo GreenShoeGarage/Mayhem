@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createEmptyProject, validateProject } from "../../web/src/state/project-store.js";
 import { runPreflight } from "../../web/src/diagnostics/preflight.js";
+import { PROJECT_SCHEMA_VERSION } from "../../web/src/config.js";
 
 if (!globalThis.crypto?.randomUUID) globalThis.crypto = { ...globalThis.crypto, randomUUID: () => "test-project" };
 
@@ -53,7 +54,7 @@ test("schema 1 projects migrate audio and performance settings into the current 
   };
   const result = migrateProject(legacy);
   assert.equal(result.migrated, true);
-  assert.equal(result.project.schemaVersion, 5);
+  assert.equal(result.project.schemaVersion, PROJECT_SCHEMA_VERSION);
   assert.equal(result.project.settings.modulation, "wfm");
   assert.equal(result.project.settings.audioOutputRate, 48000);
   assert.equal(result.project.settings.performanceProfile, "auto");

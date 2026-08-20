@@ -54,7 +54,7 @@ export const APPLICATION_DEFINITIONS = Object.freeze([
     "portState": "ready",
     "verificationState": "fixture-tested",
     "limitations": [
-      "The demodulator has prior on-air reference-hardware history, but the browser audio-output path changed in v0.8.1 and the current repaired path still needs a focused physical re-check."
+      "The demodulator has prior on-air reference-hardware history, but the current repaired browser audio-output path still needs a focused physical re-check."
     ]
   },
   {
@@ -73,7 +73,7 @@ export const APPLICATION_DEFINITIONS = Object.freeze([
     "portState": "ready",
     "verificationState": "fixture-tested",
     "limitations": [
-      "The demodulator has prior on-air reference-hardware history, but the browser audio-output path changed in v0.8.1 and the current repaired path still needs a focused physical re-check."
+      "The demodulator has prior on-air reference-hardware history, but the current repaired browser audio-output path still needs a focused physical re-check."
     ]
   },
   {
@@ -92,7 +92,7 @@ export const APPLICATION_DEFINITIONS = Object.freeze([
     "portState": "ready",
     "verificationState": "fixture-tested",
     "limitations": [
-      "The demodulator has prior on-air reference-hardware history, but the browser audio-output path changed in v0.8.1 and the current repaired path still needs a focused physical re-check."
+      "The demodulator has prior on-air reference-hardware history, but the current repaired browser audio-output path still needs a focused physical re-check."
     ]
   },
   {
@@ -190,9 +190,171 @@ export const APPLICATION_DEFINITIONS = Object.freeze([
     "portState": "ready",
     "verificationState": "unit-tested",
     "limitations": [
-      "The WFM/AM demodulators have deterministic fixtures and prior reference-hardware history; the repaired v0.8.1+ browser audio-output path and this dedicated broadcast workflow still need a focused physical re-check.",
+      "The WFM/AM demodulators have deterministic fixtures and prior reference-hardware history; the current repaired browser audio-output path and this dedicated broadcast workflow still need a focused physical re-check.",
       "Medium-wave AM may require RTL2832U direct sampling on ordinary R8xx dongles; RTL-SDR Blog V4-class hardware can use its low-frequency input path when detected.",
       "AM channel spacing varies by region; the preset offers 10 kHz and 9 kHz stepping."
+    ]
+  },
+  {
+    "id": "pocsag",
+    "coreName": "POCSAG RX",
+    "name": "POCSAG Pager Receiver",
+    "icon": "⌁",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 14000,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "simulation-tested",
+    "limitations": [
+      "Receive-only decoder supports automatic or fixed 512, 1200, and 2400 bit/s POCSAG with BCH correction, address/function extraction, alpha/numeric text, and optional local NFM audio monitoring.",
+      "Paging traffic may contain private or sensitive content; decoded pages remain local and should be handled in accordance with applicable law and policy.",
+      "On-air verification on the reference RTL-SDR remains pending; deterministic IQ fixtures and explicit Simulation Mode are covered by automated tests."
+    ]
+  },
+  {
+    "id": "flexrx",
+    "coreName": "FLEX RX",
+    "name": "FLEX Pager Receiver",
+    "icon": "F",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 25000,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "fixture-tested",
+    "limitations": [
+      "v0.8.8 implements the FLEX 1600 bit/s 2FSK sync/FIW/Phase-A alphanumeric receive foundation with BCH correction and continuous-IQ fixture coverage.",
+      "3200/6400 bit/s, 4FSK, fragmented pages, and the full FLEX vector catalog remain pending on-air/fixture expansion.",
+      "Paging traffic may contain private or sensitive content; decoded content remains local."
+    ]
+  },
+  {
+    "id": "twotone",
+    "coreName": "2-Tone RX",
+    "name": "Two-Tone Sequential Paging Receiver",
+    "icon": "2",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 12500,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "fixture-tested",
+    "limitations": [
+      "Motorola/EIA Quik-Call II tone-bank detection and A/B sequencing are continuous-IQ fixture tested; on-air validation remains pending.",
+      "Detection reports tone pairs and durations; agency/use identification is not inferred automatically."
+    ]
+  },
+  {
+    "id": "afsk",
+    "coreName": "AFSK RX",
+    "name": "Audio Frequency-Shift Keying Terminal",
+    "icon": "A",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 12500,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "fixture-tested",
+    "limitations": [
+      "Bell 202/103 and V.21/V.23 deterministic IQ fixtures pass; on-air modem reception is pending physical validation.",
+      "Speaker monitoring is optional and is not part of the decode path."
+    ]
+  },
+  {
+    "id": "aprs",
+    "coreName": "APRS RX",
+    "name": "Automatic Packet Reporting System Receiver",
+    "icon": "P",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 12500,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "fixture-tested",
+    "limitations": [
+      "Bell 202, NRZI, HDLC, AX.25 FCS, address/path, text, and basic uncompressed position decoding are fixture-tested; on-air APRS is pending.",
+      "No remote map tiles are loaded; decoded coordinates remain local."
+    ]
+  },
+  {
+    "id": "acars",
+    "coreName": "ACARS RX",
+    "name": "Aircraft Communications Addressing and Reporting System Receiver",
+    "icon": "C",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 25000,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "fixture-tested",
+    "limitations": [
+      "2400 bit/s ACARS AM/MSK tone recovery, odd parity, block framing, CRC-16/XMODEM, and core fields are fixture-tested; on-air reception is pending.",
+      "MAYHEM RTL tunes a small intermediate-frequency offset so the AM carrier survives the RTL2832U DC blocker."
+    ]
+  },
+  {
+    "id": "rtty",
+    "coreName": "RTTY RX",
+    "name": "Radio Teletype Receiver",
+    "icon": "R",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 4000,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "fixture-tested",
+    "limitations": [
+      "45.45 baud, 170 Hz shift, USB/LSB tone recovery and ITA2/Baudot text are fixture-tested; on-air RTTY remains pending.",
+      "HF frequencies may require the RTL2832U Q-branch direct-sampling path or an external upconverter depending on receiver hardware."
+    ]
+  },
+  {
+    "id": "morse",
+    "coreName": "Morse RX",
+    "name": "Morse Code Receiver",
+    "icon": "·",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 2000,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "fixture-tested",
+    "limitations": [
+      "CW tone-envelope timing and International Morse text decoding are deterministic-IQ tested at configured speed; on-air decoding remains pending.",
+      "The first release uses operator-set words per minute and threshold rather than a fully automatic speed estimator."
     ]
   },
   {
@@ -212,6 +374,139 @@ export const APPLICATION_DEFINITIONS = Object.freeze([
     "verificationState": "unit-tested",
     "limitations": [
       "Serialized tuning, threshold/hold behavior, and scan-history logic are automated-test verified; live scan review on additional bands remains operator-dependent."
+    ]
+  },
+  {
+    "id": "level",
+    "coreName": "Level",
+    "name": "Signal Level Meter",
+    "icon": "▥",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 0,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "unit-tested",
+    "limitations": [
+      "Relative dBFS level, rolling statistics, and history use the same continuous browser receive stream as the spectrum path; physical workflow review remains pending."
+    ]
+  },
+  {
+    "id": "detector",
+    "coreName": "Detector",
+    "name": "Signal Activity Detector",
+    "icon": "◉",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 0,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "unit-tested",
+    "limitations": [
+      "Threshold, hysteresis, minimum-active, and release timing are local energy-detection heuristics; a detection does not identify a protocol or transmitter."
+    ]
+  },
+  {
+    "id": "foxhunt",
+    "coreName": "Fox Hunt",
+    "name": "Fox Hunt Relative Signal Meter",
+    "icon": "⌖",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 0,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "unit-tested",
+    "limitations": [
+      "Displays relative received level for direction-finding workflows; it is not a calibrated field-strength meter and does not infer bearing automatically."
+    ]
+  },
+  {
+    "id": "search",
+    "coreName": "Search",
+    "name": "Spectrum Peak Search",
+    "icon": "⌕",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 0,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "unit-tested",
+    "limitations": [
+      "Finds local maxima inside the currently sampled bandwidth using threshold, noise-floor, prominence, and separation rules; it does not sweep outside the current passband."
+    ]
+  },
+  {
+    "id": "lookingglass",
+    "coreName": "Looking Glass",
+    "name": "Looking Glass Wideband Sweep",
+    "icon": "▤",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 0,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "unit-tested",
+    "limitations": [
+      "Builds a stitched max-hold view by serially retuning the receiver across multiple slices. Short signals can occur between dwells and be missed."
+    ]
+  },
+  {
+    "id": "signalhunter",
+    "coreName": "Signal Hunter",
+    "name": "Signal Hunter Triggered Capture",
+    "icon": "◎",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 0,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "unit-tested",
+    "limitations": [
+      "Armed mode can automatically start a bounded local IQ capture when receive level crosses the configured threshold. v0.8.4 captures post-trigger samples; pre-trigger buffering is not yet implemented."
+    ]
+  },
+  {
+    "id": "timesink",
+    "coreName": "Time Sink",
+    "name": "Time Sink Oscilloscope",
+    "icon": "∿",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 0,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "unit-tested",
+    "limitations": [
+      "Shows bounded downsampled I/Q snapshots from the continuous worker stream for inspection; use raw capture for sample-complete evidence."
     ]
   },
   {
@@ -270,6 +565,131 @@ export const APPLICATION_DEFINITIONS = Object.freeze([
     "limitations": [
       "DF17/DF18 extended-squitter CRC, identification, altitude, velocity and global airborne CPR are implemented with deterministic fixtures; on-air aircraft decoding remains to be verified.",
       "No aircraft data leaves the browser; the graticule uses no remote map tiles."
+    ]
+  },
+  {
+    "id": "aisrx",
+    "coreName": "AIS RX",
+    "name": "Automatic Identification System Receiver",
+    "icon": "≈",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 100000,
+    "requiresAudio": false,
+    "requiresMap": true,
+    "portState": "ready",
+    "verificationState": "fixture-tested",
+    "limitations": [
+      "v0.8.9 decodes AIS channels A and B simultaneously from a 162.000 MHz center using 9600 bit/s NRZI/HDLC, bit de-stuffing, CRC-16/X-25, and fixture-backed Class A position reports.",
+      "Message types 1/2/3 are promoted for structured position data; broader AIS message parsing remains incremental.",
+      "No vessel data leaves the browser and no remote map tiles are required; on-air marine reception remains pending."
+    ]
+  },
+  {
+    "id": "sonde",
+    "coreName": "Radiosonde",
+    "name": "Radiosonde Receiver",
+    "icon": "↟",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 25000,
+    "requiresAudio": false,
+    "requiresMap": true,
+    "portState": "ready",
+    "verificationState": "fixture-tested",
+    "limitations": [
+      "v0.8.9 promotes the Vaisala RS41-SG 4800 bit/s 2FSK path with XOR descrambling, CRC-16/CCITT-FALSE status/GPS block validation, identity, battery, and ECEF position conversion.",
+      "Meteomodem M10/M2K2/M20 and additional sonde families remain pending in the browser port.",
+      "On-air radiosonde validation remains pending; deterministic continuous-IQ fixtures cross normal worker block boundaries."
+    ]
+  },
+  {
+    "id": "epirbrx",
+    "coreName": "406 Beacon",
+    "name": "406 MHz Distress Beacon Receiver",
+    "icon": "!",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 50000,
+    "requiresAudio": false,
+    "requiresMap": true,
+    "portState": "ready",
+    "verificationState": "fixture-tested",
+    "limitations": [
+      "Receive-only v0.8.9 foundation decodes deterministic COSPAS-SARSAT 406 MHz long-frame biphase-L bursts, verifies BCH-1/BCH-2, and parses a Standard Location PLB serial-position fixture.",
+      "The application is for passive reception/analysis only; no distress-beacon transmission capability exists or is provided.",
+      "Broader user/location protocol catalog and on-air emergency-beacon validation remain pending."
+    ]
+  },
+  {
+    "id": "tpms",
+    "coreName": "TPMS RX",
+    "name": "Tire Pressure Monitoring System Receiver",
+    "icon": "T",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 200000,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "simulation-tested",
+    "limitations": [
+      "Initial v0.8.6 sub-GHz telemetry path targets Schrader/GMC-style OOK packet families and preserves a shared OOK/FSK architecture for broader TPMS coverage.",
+      "Deterministic local fixtures are verified; on-air vehicle sensor validation remains pending."
+    ]
+  },
+  {
+    "id": "weather",
+    "coreName": "Weather",
+    "name": "Sub-GHz Weather Sensor Receiver",
+    "icon": "☁",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 200000,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "simulation-tested",
+    "limitations": [
+      "v0.8.6 begins with the Nexus TH pulse protocol on the shared weather protocol interface; additional upstream weather protocols will be promoted only with deterministic fixtures.",
+      "Decoded sensor observations remain local; on-air validation remains pending."
+    ]
+  },
+  {
+    "id": "sstvrx",
+    "coreName": "SSTV RX",
+    "name": "Slow-Scan Television Receiver",
+    "icon": "▧",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 48000,
+    "requiredBandwidthHz": 15000,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "fixture-tested",
+    "limitations": [
+      "v0.8.10 promotes Martin 1 end-to-end image reconstruction from the continuous processing-worker IQ stream with automatic VIS detection, progressive RGB scanlines, phase/slant controls, and local PNG/metadata export.",
+      "HF SSTV uses the USB receive path while VHF/ISS-style SSTV uses FM; Auto chooses USB below 30 MHz and FM above it.",
+      "Scottie 1/2/DX, Martin 2, and SC2-180 timings are present for manual/experimental use; Martin 1 is the deterministic reference mode for this release.",
+      "Live/on-air SSTV reception remains pending physical validation."
     ]
   },
   {

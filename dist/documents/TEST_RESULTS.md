@@ -1,126 +1,63 @@
-# Test results
+# Test results — MAYHEM RTL v0.8.11
 
-Version: **0.8.2**  
-Upstream commit: `44736b9ca844732e18f35e86eb5beece1d9c2c57`  
-Web RTL-SDR reference commit: `5699cec220cb0349e8f9144b7b71d3d03b5d9dbf`
+Date: 2026-08-20
 
-## Verification boundary
+## Release gate
 
-This is a truthful development release. Automated JavaScript/browser-module tests, portable C Digital Signal Processing (DSP) tests, receive-only C++ contract tests, C++ Mayhem registry/UI tests, WebAssembly compilation, registry generation, active-version consistency checks and the built-runtime no-network audit are executed in the artifact environment.
+Commands:
 
-The reference live-receive/high-rate evidence is carried forward from physical testing. The browser audio-output layer changed in v0.8.1 after the reported no-audio/continuous-underrun condition, so the current repaired audio path remains **pending focused physical re-validation**. USB/LSB/CW are deterministic-fixture tested in v0.8.2 and are not labeled on-air verified.
-
-## Automated commands
-
-```bash
+```text
 npm run build
 npm test
 ```
 
-## Result summary
+Result: **PASS**.
 
-- **54 JavaScript/browser-module tests passed.**
-- Portable C DSP kernel tests passed.
+- 108/108 JavaScript/browser-module tests passed.
+- Portable C Digital Signal Processing kernel tests passed.
 - Receive-only C++ `RadioDevice` contract tests passed.
-- C++ Mayhem UI/registry tests passed, including all generated native file-scope `Registrar` application units.
-- `dist/assets/dsp_core.wasm` compiled successfully.
-- `dist/assets/mayhem_core.wasm` compiled successfully.
-- Built-distribution no-network audit passed.
-- Active-version/service-worker regression tests passed.
+- C++ Mayhem UI primitive and native `app::Registrar` registry tests passed.
+- Both WebAssembly assets built successfully.
+- Production no-network audit passed.
+- Generated native application registry contains 42 applications.
 
-## v0.8.2 Amateur Radio coverage
+## v0.8.11 UI/UX cleanup coverage
 
-Automated tests verify:
+- The navigation task groups and Receiver Library naming are regression-pinned.
+- Easy Mode's advanced-only status and support controls are checked structurally.
+- Home is verified to be task-first and free of the duplicate source-card controls removed in this release.
+- The general Receiver is checked for one stateful Start/Stop control and automatic/manual gain visibility.
+- Receiver Library search/task filters and transmit-only separation are checked.
+- Advanced inspector routing is checked across the modern receive workspaces.
+- No project-schema migration is introduced; schema remains 12.
+- Generated native application registry remains 42 applications.
 
-- common 160 m–70 cm receive presets are present;
-- conventional 40 m LSB, 20 m USB, 30 m CW and 2 m NFM defaults;
-- ordinary R8xx-class profiles select Q-branch direct sampling for HF below the tuner floor;
-- zero-minimum-frequency profiles do not request unnecessary direct sampling;
-- USB recovers its selected sideband fixture and strongly rejects the opposite sideband;
-- LSB recovers its selected sideband fixture and strongly rejects the opposite sideband;
-- RIT corrects a known carrier offset without changing nominal hardware tune;
-- CW produces the configured beat pitch from a carrier at the tuned frequency;
-- USB/LSB/CW/Amateur Radio are receive-only registered applications;
-- project schema accepts the new SSB/CW/AGC/RIT state.
+## v0.8.10 SSTV coverage
 
-The worker DSP fixtures exercise IQ-to-audio behavior rather than merely checking labels or menu entries.
+- The audited six-mode SSTV table and VIS parity behavior are deterministic.
+- 1500 Hz maps to black and 2300 Hz maps to white.
+- A complete 256-line Martin 1 frequency fixture reconstructs all 256 RGB scanlines progressively and checks known red/green/blue plane values.
+- Martin 1 USB-IQ survives unsigned-8-bit quantization, worker-style per-block DC removal and ordinary 32,768-sample worker boundaries.
+- Martin 1 FM-IQ reaches the same image decoder path.
+- Worker integration is explicitly checked so SSTV decoder state is not reconfigured/reset once per IQ block.
+- The browser shell exposes 14.230 MHz USB and 145.800 MHz FM presets, Auto/USB/FM input selection, Auto VIS, manual mode fallback, phase/slant controls, a progressive canvas, raw IQ capture, local PNG export and JSON metadata export.
+- Simulation Mode contains a complete 256-line Martin 1 image fixture.
+- SSTV capture metadata records application, input mode, image mode, VIS setting, phase and slant so a recorded SSTV IQ file can reopen into the SSTV replay workflow.
 
-## Audio-output stabilization carried from v0.8.1
+## Prior coverage retained
 
-Automated tests continue to verify:
+All prior v0.8.x regression gates remain active, including WFM/NFM/AM/USB/LSB/CW, Scanner, ADS-B, POCSAG, Signal Analysis, AFSK/APRS/ACARS/RTTY/Morse, TPMS/Weather, FLEX/Two-Tone, AIS, Vaisala RS41-SG, passive 406 MHz beacon reception, WebUSB state/identifier policy, project migration, SharedArrayBuffer/performance behavior, version/cache consistency, C/C++ contracts and the no-network distribution audit.
 
-- WFM/NFM/AM deterministic audio fixtures;
-- fixed-size AudioWorklet ring structure;
-- bounded prebuffer/rebuffer behavior;
-- zero-input source configuration contract;
-- worker/audio frame handoff without duplicate transferred-buffer cloning;
-- queue/rebuffer/drop diagnostic state.
+## Physical evidence boundary
 
-These tests do not replace the requested physical listening re-check of the repaired browser audio-output path.
+The user reported the **v0.8.6 reference baseline validated**. That remains the explicitly recorded hardware baseline. v0.8.8/v0.8.9 additions and v0.8.10 SSTV are deterministic-fixture tested and are **not yet claimed as on-air validated**.
 
-## Broadcast Radio / Scanner / ADS-B coverage
+SSTV physical validation should cover both a known HF USB image source and a known VHF/FM image source, plus capture/replay of the same IQ.
 
-Broadcast tests cover WFM/AM preset selection, normal-tuner versus direct-sampling decisions and regional-neutral channel steps.
+## Known SSTV limitations
 
-Scanner tests cover deterministic sequence, threshold hits, hold behavior, range wrapping, lockouts, lockout clearing and bounded discovery history.
-
-Automatic Dependent Surveillance–Broadcast (ADS-B) tests cover Mode S 24-bit Cyclic Redundancy Check, a known callsign fixture, a known even/odd global Compact Position Reporting pair, 2.4 million-samples-per-second IQ pulse recovery and the explicit Simulation Mode fixture. On-air aircraft reception remains pending.
-
-## Version-consistency verification
-
-The active semantic version is checked across:
-
-- `package.json`;
-- `web/src/config.js`;
-- CMake;
-- visible header/About token injection;
-- HTML `data-app-version` runtime marker;
-- version-addressed entry JavaScript and Cascading Style Sheets;
-- generated `version.json`;
-- versioned service-worker registration;
-- service-worker cache namespace.
-
-The startup guard compares the executing JavaScript `APP_VERSION` with the HTML build marker before normal application initialization. Regression coverage verifies stale-cache cleanup preserves the executing/current version cache rather than the stale HTML cache.
-
-## Physical reference evidence carried forward
-
-Reference device: `RTL2838UHIDIR`  
-Conservative tuner label: R820T/R820T2/R860 family.
-
-Recorded receive/high-rate checks include:
-
-- direct WebUSB connection;
-- live sample reception;
-- spectrum and waterfall;
-- retune while receiving;
-- gain and sample-rate changes;
-- stop/restart;
-- hot unplug/reconnect;
-- 30-minute 1.024 Msps soak with zero visible drops;
-- 60-minute 2.4 Msps target soak;
-- 2.4 Msps receive plus capture;
-- SharedArrayBuffer handoff;
-- bounded long-run memory and queue behavior.
-
-Earlier builds also produced on-air WFM/NFM/AM audio, but the current repaired AudioWorklet/output path is intentionally not promoted from that historical evidence without a new focused physical re-check.
-
-## Browser smoke boundary
-
-Recent artifact-environment Chromium runs have not reliably completed localhost navigation within the bounded smoke-test window. Therefore v0.8.2 does **not** claim a new full interactive Chromium end-to-end run from the artifact environment. The browser/module tests, build/runtime audits and prior historical browser evidence remain separate from target-machine operator review.
-
-## Not yet verified
-
-- repaired v0.8.1+ browser audio output on the physical reference system;
-- on-air USB amateur reception;
-- on-air LSB amateur reception;
-- on-air CW reception and beat-pitch adjustment;
-- practical HF direct-sampling sensitivity/input behavior in the new Amateur Radio workspace;
-- focused medium-wave Broadcast AM workflow on the current repaired audio layer;
-- on-air ADS-B aircraft decoding;
-- broader live Scanner use;
-- R828D physical hardware;
-- exact R860 physical identification;
-- multi-device / cross-browser / cross-operating-system matrix;
-- exact upstream font/bitmap/theme/widget/native-application convergence in browser WebAssembly.
-
-No pending item above should be relabeled hardware-tested or on-air verified until recorded evidence supports it.
+- Martin 1 is the promoted reference mode in v0.8.10. Scottie 1/2/DX, Martin 2 and SC2-180 mode/timing definitions are present but remain pending broader physical validation.
+- Auto input mode intentionally uses a simple convention: USB below 30 MHz and FM above it. Manual selection is available for other operating conventions.
+- Automatic tone centering, automatic slant estimation, aggressive lost-sync recovery and an image gallery/history remain candidates for v0.8.12.
+- Live/on-air SSTV reception has not been demonstrated in this artifact environment.
+- A fresh Chromium localhost smoke is not claimed when the artifact browser runtime cannot complete local navigation; module/native/WebAssembly and deterministic continuous-IQ tests are the release evidence here.

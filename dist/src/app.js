@@ -18,11 +18,29 @@ import { buildStreamPlan, PerformanceGovernor, performanceLabel } from "./perfor
 import { BroadcastBand, broadcastBandDefinition, broadcastConfiguration, nextBroadcastFrequency } from "./radio/broadcast-radio.js";
 import { AMATEUR_BAND_ORDER, AmateurMode, amateurBandDefinition, amateurConfiguration, amateurFrequencyPath, amateurModeDefaults, clampAmateurFrequency } from "./radio/amateur-radio.js";
 import { ScannerController } from "./scanner/scanner-controller.js";
+import { ActivityDetector, LevelHistory, WidebandSweepAccumulator, estimateNoiseFloorDb, findSpectrumPeaks, nextRangeFrequency, relativeStrength } from "./analysis/signal-analysis.js";
+import { TimeSinkView } from "./panels/time-sink.js";
+import { AFSK_MODEM_PRESETS, MORSE_IF_OFFSET_HZ, RTTY_PRESETS } from "./dsp/digital-decoders.js";
+import { AIS_CENTER_HZ, EPIRB_IF_OFFSET_HZ } from "./dsp/tracking-decoders.js";
+import { SSTV_MODES, SSTV_HF_CALLING_HZ, SSTV_ISS_HZ, sstvModeById } from "./dsp/sstv.js";
 import { downloadBlob, escapeCsv, formatBytes, formatDateTime, formatDuration, formatFrequency, formatRate, makeId, safeFilename } from "./utils/format.js";
 
 const $ = (id) => document.getElementById(id);
 const AUDIO_MODES = Object.freeze(["wfm", "nfm", "am", "usb", "lsb", "cw"]);
 const SSB_MODES = Object.freeze(["usb", "lsb", "cw"]);
+const ANALYSIS_TO_APP = Object.freeze({ level: "level", detector: "detector", foxhunt: "foxhunt", search: "search", lookingglass: "lookingglass", signalhunter: "signalhunter", timesink: "timesink" });
+const ANALYSIS_APPS = Object.freeze(Object.values(ANALYSIS_TO_APP));
+const DIGITAL_APPS = Object.freeze(["afsk", "aprs", "acars", "rtty", "morse"]);
+const DIGITAL_LABELS = Object.freeze({ afsk: "AFSK", aprs: "APRS", acars: "ACARS", rtty: "RTTY", morse: "Morse" });
+const PAGING_APPS = Object.freeze(["flex", "twotone"]);
+const PAGING_LABELS = Object.freeze({ flex: "FLEX", twotone: "2-Tone" });
+const PAGING_TO_APP = Object.freeze({ flex: "flexrx", twotone: "twotone" });
+const TELEMETRY_APPS = Object.freeze(["tpms", "weather"]);
+const TELEMETRY_LABELS = Object.freeze({ tpms: "TPMS", weather: "Weather" });
+const TRACKING_APPS = Object.freeze(["ais", "radiosonde", "epirb"]);
+const TRACKING_LABELS = Object.freeze({ ais: "AIS", radiosonde: "Radiosonde", epirb: "406 MHz Beacon" });
+const TRACKING_TO_APP = Object.freeze({ ais: "aisrx", radiosonde: "sonde", epirb: "epirbrx" });
+const SSTV_MODE_IDS = Object.freeze(SSTV_MODES.map((mode) => mode.id));
 const appShell = $("app");
 const viewHost = $("viewHost");
 const inspectorHost = $("inspectorHost");
@@ -46,6 +64,7 @@ const performanceGovernor = new PerformanceGovernor();
 let processing = null;
 let processingStartError = null;
 let spectrumView = null;
+let timeSinkView = null;
 let framebuffer = null;
 let coreRegistryStatus = { state: "not-loaded", message: "Mayhem core has not been opened in this view.", hash: null };
 let currentView = projectStore.project.activeView || "home";
@@ -66,12 +85,55 @@ let pendingTune = false;
 let updateWaiting = null;
 let statusTimer = null;
 let scanner = null;
+let analysisTool = projectStore.project.settings.analysisTool || "level";
+const levelHistory = new LevelHistory({ maxPoints: 600 });
+const activityDetector = new ActivityDetector({
+  thresholdDbfs: projectStore.project.settings.detectorThresholdDbfs,
+  hysteresisDb: projectStore.project.settings.detectorHysteresisDb,
+  minActiveMs: projectStore.project.settings.detectorMinActiveMs,
+  releaseMs: projectStore.project.settings.detectorReleaseMs
+});
+let searchPeaks = [];
+let latestTimeSeries = null;
+let lookingGlassState = { running: false, token: 0, accumulator: null, currentHz: null, completedAt: null, originalHz: null, error: null };
+let spectrumWaiters = [];
+let signalHunterState = { armed: false, capturing: false, triggerCount: 0, lastTriggerAt: 0, lastCapture: null, error: null, timer: null, above: false, hopToken: 0, currentHz: null };
 let adsbAircraft = new Map();
 let adsbRecentFrames = [];
 let adsbFrameCount = 0;
+let pocsagMessages = [];
+let pocsagStats = { syncs: 0, batches: 0, pages: 0, correctedBits: 0, uncorrectableCodewords: 0, lastBitrate: 0, lastInverted: false, lanes: {} };
+let digitalTool = DIGITAL_APPS.includes(projectStore.project.settings.digitalTool) ? projectStore.project.settings.digitalTool : "aprs";
+let digitalResults = { afsk: { text: "", events: [] }, aprs: { frames: [] }, acars: { frames: [] }, rtty: { text: "", events: [] }, morse: { text: "", events: [] } };
+let digitalStatus = Object.fromEntries(DIGITAL_APPS.map((id) => [id, {}]));
+let pagingTool = PAGING_APPS.includes(projectStore.project.settings.pagingTool) ? projectStore.project.settings.pagingTool : "flex";
+let pagingResults = { flex: [], twotone: [] };
+let pagingStatus = { flex: {}, twotone: {} };
+let telemetryTool = TELEMETRY_APPS.includes(projectStore.project.settings.telemetryTool) ? projectStore.project.settings.telemetryTool : "tpms";
+let telemetryResults = { tpms: [], weather: [] };
+let telemetryStatus = { tpms: {}, weather: {} };
+let trackingTool = TRACKING_APPS.includes(projectStore.project.settings.trackingTool) ? projectStore.project.settings.trackingTool : "ais";
+let trackingResults = { ais: [], radiosonde: [], epirb: [] };
+let trackingStatus = { ais: {}, radiosonde: {}, epirb: {} };
+let sstvStatus = {};
+let sstvImage = createSstvImageState();
+let applicationLibraryFilter = "featured";
+let applicationLibraryQuery = "";
 
 function createSourceStats() {
   return { blocks: 0, bytes: 0, samples: 0, ringDrops: 0, startedAt: null, stoppedAt: null, effectiveSampleRate: 0, levelDbfs: null, lastBlockAt: null };
+}
+
+function createSstvImageState() {
+  const pixels = new Uint8ClampedArray(320 * 256 * 4);
+  for (let i = 3; i < pixels.length; i += 4) pixels[i] = 255;
+  return { width: 320, height: 256, pixels, receivedLines: new Set(), modeId: "martin1", modeName: "Martin 1", vis: null, startedAt: null, updatedAt: null };
+}
+
+function resetSstvImage({ preserveMode = true } = {}) {
+  const modeId = preserveMode ? (sstvImage?.modeId || currentSettings().sstvMode || "martin1") : (currentSettings().sstvMode || "martin1");
+  sstvImage = createSstvImageState();
+  sstvImage.modeId = modeId; sstvImage.modeName = sstvModeById(modeId)?.name || "Martin 1";
 }
 
 function node(tag, attributes = {}, ...children) {
@@ -223,24 +285,64 @@ function audioStatusText() {
 
 function audioProcessingSettings() {
   const settings = currentSettings();
+  let audioEnabled = audio.enabled;
+  let modulation = settings.modulation;
+  let decoderMode = "none";
+  if (activeApplicationId === "pocsag") {
+    audioEnabled = audio.enabled && settings.pocsagMonitorAudio;
+    modulation = "nfm";
+    decoderMode = "pocsag";
+  } else if (activeApplicationId === "adsbrx") decoderMode = "adsb";
+  else if (DIGITAL_APPS.includes(activeApplicationId)) {
+    decoderMode = activeApplicationId;
+    const monitorKey = `${activeApplicationId}MonitorAudio`;
+    audioEnabled = audio.enabled && Boolean(settings[monitorKey]);
+    modulation = activeApplicationId === "acars" ? "am"
+      : activeApplicationId === "rtty" ? (settings.rttySideband || "usb")
+      : activeApplicationId === "morse" ? "cw" : "nfm";
+  }
   return {
-    audioEnabled: audio.enabled,
-    modulation: settings.modulation,
+    audioEnabled,
+    modulation,
     audioOutputRate: settings.audioOutputRate,
     audioBandwidthHz: settings.audioBandwidthHz,
     deemphasisUs: settings.deemphasisUs,
-    squelchDb: settings.squelchDb,
+    squelchDb: DIGITAL_APPS.includes(activeApplicationId) ? -140 : settings.squelchDb,
     ssbLowCutHz: settings.ssbLowCutHz,
-    ritHz: settings.ritHz,
-    cwPitchHz: settings.cwPitchHz,
+    ritHz: activeApplicationId === "morse" ? -Math.abs(MORSE_IF_OFFSET_HZ) : settings.ritHz,
+    cwPitchHz: activeApplicationId === "morse" ? settings.morsePitchHz : settings.cwPitchHz,
     agcMode: settings.agcMode,
-    decoderMode: activeApplicationId === "adsbrx" ? "adsb" : "none",
+    decoderMode,
+    telemetryMode: TELEMETRY_APPS.includes(activeApplicationId) ? activeApplicationId : "none",
+    pagingMode: activeApplicationId === "flexrx" ? "flex" : activeApplicationId === "twotone" ? "twotone" : "none",
+    trackingMode: activeApplicationId === "aisrx" ? "ais" : activeApplicationId === "sonde" ? "radiosonde" : activeApplicationId === "epirbrx" ? "epirb" : "none",
+    sstvEnabled: activeApplicationId === "sstvrx",
+    sstvRfMode: resolvedSstvInputMode(),
+    sstvMode: settings.sstvMode ?? "martin1",
+    sstvAutoVis: settings.sstvAutoVis !== false,
+    sstvPhaseOffset: Number(settings.sstvPhaseOffset ?? 0),
+    sstvSlant: Number(settings.sstvSlant ?? 0),
+    sstvChannelOffsetHz: 0,
+    pocsagBaudRate: settings.pocsagBaudRate ?? "auto",
+    afskProfile: settings.afskProfile ?? "bell202",
+    afskReverse: Boolean(settings.afskReverse),
+    aprsReverse: Boolean(settings.aprsReverse),
+    acarsChannelOffsetHz: -Math.abs(Number(settings.acarsIfOffsetHz ?? 12000)),
+    rttyProfile: settings.rttyProfile ?? "eu",
+    rttySideband: settings.rttySideband ?? "usb",
+    rttyReverse: Boolean(settings.rttyReverse),
+    morseWpm: Number(settings.morseWpm ?? 20),
+    morsePitchHz: Number(settings.morsePitchHz ?? 700),
+    morseThreshold: Number(settings.morseThreshold ?? 0.035),
+    morseChannelOffsetHz: -Math.abs(MORSE_IF_OFFSET_HZ),
+    timeSinkEnabled: currentView === "analysis" && analysisTool === "timesink",
+    timeSinkPoints: settings.timeSinkPoints ?? 512,
     sampleRate: effectiveActual().sampleRate
   };
 }
 
-function syncAudioProcessing({ resetAudio = false } = {}) {
-  processing?.updateSettings(audioProcessingSettings(), false, resetAudio);
+function syncAudioProcessing({ resetAudio = false, resetDecoder = false } = {}) {
+  processing?.updateSettings(audioProcessingSettings(), false, resetAudio, resetDecoder);
 }
 
 function prepareRuntimeStreamPlan() {
@@ -498,6 +600,7 @@ function updateProcessingTelemetry(detail = {}) {
     displayRateHz: detail.displayRateHz ?? processingStats.displayRateHz,
     spectrumStride: detail.spectrumStride ?? processingStats.spectrumStride
   };
+  updateSignalAnalysis(detail);
 }
 
 function bindProcessing() {
@@ -505,6 +608,8 @@ function bindProcessing() {
     const detail = event.detail;
     updateProcessingTelemetry(detail);
     latestSpectrum = detail;
+    updateSpectrumAnalysis(detail);
+    resolveSpectrumWaiters(detail);
     spectrumView?.update(detail);
     updateGlobalStatus();
   });
@@ -517,6 +622,19 @@ function bindProcessing() {
     updateAudioControls();
   });
   processing.addEventListener("adsb", (event) => handleAdsbFrame(event.detail));
+  processing.addEventListener("pocsag", (event) => handlePocsagPage(event.detail));
+  processing.addEventListener("pocsag-status", (event) => handlePocsagStatus(event.detail));
+  processing.addEventListener("digital", (event) => handleDigitalEvent(event.detail));
+  processing.addEventListener("digital-status", (event) => handleDigitalStatus(event.detail));
+  processing.addEventListener("telemetry", (event) => handleTelemetryEvent(event.detail));
+  processing.addEventListener("telemetry-status", (event) => handleTelemetryStatus(event.detail));
+  processing.addEventListener("paging", (event) => handlePagingEvent(event.detail));
+  processing.addEventListener("paging-status", (event) => handlePagingStatus(event.detail));
+  processing.addEventListener("tracking", (event) => handleTrackingEvent(event.detail));
+  processing.addEventListener("tracking-status", (event) => handleTrackingStatus(event.detail));
+  processing.addEventListener("sstv", (event) => handleSstvEvent(event.detail));
+  processing.addEventListener("sstv-status", (event) => handleSstvStatus(event.detail));
+  processing.addEventListener("timeseries", (event) => { latestTimeSeries = event.detail; if (currentView === "analysis" && analysisTool === "timesink") renderSignalAnalysisLive(); });
   processing.addEventListener("queue", (event) => {
     processingStats.pending = event.detail.pending;
     processingStats.capacity = event.detail.capacity;
@@ -580,18 +698,31 @@ function presentError(title, error, { receivingStopped = !sourceRunning, dataSaf
 
 function navigate(view, { focus = true } = {}) {
   if (currentView === "scanner" && view !== "scanner") scanner?.stop();
+  if (currentView === "analysis" && view !== "analysis") {
+    if (analysisTool === "lookingglass") stopLookingGlassSweep({ restore: false });
+    if (analysisTool === "signalhunter") disarmSignalHunter();
+  }
   if (view === "receiver" && !["spectrum", "waterfall", "capture", ...AUDIO_MODES].includes(activeApplicationId)) activeApplicationId = currentSettings().modulation || "wfm";
   if (view === "broadcast") activeApplicationId = "broadcast";
   if (view === "amateur") activeApplicationId = "amateur";
   if (view === "scanner") activeApplicationId = "scanner";
+  if (view === "analysis") activeApplicationId = analysisAppId();
+  if (view === "pocsag") activeApplicationId = "pocsag";
+  if (view === "paging") activeApplicationId = PAGING_TO_APP[pagingTool];
+  if (view === "digital") activeApplicationId = digitalTool;
+  if (view === "telemetry") activeApplicationId = telemetryTool;
+  if (view === "tracking") activeApplicationId = TRACKING_TO_APP[trackingTool];
+  if (view === "sstv") activeApplicationId = "sstvrx";
   if (view === "adsb") activeApplicationId = "adsbrx";
-  syncAudioProcessing();
   currentView = view;
+  syncAudioProcessing();
   if (compactNavMedia.matches) compactNavOpen = false;
   projectStore.update((project) => { project.activeView = view; });
   document.querySelectorAll(".nav-button").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   spectrumView?.destroy();
   spectrumView = null;
+  timeSinkView?.destroy();
+  timeSinkView = null;
   framebuffer?.destroy?.();
   framebuffer = null;
   renderView();
@@ -610,6 +741,13 @@ function renderView() {
   else if (currentView === "broadcast") renderBroadcastRadio();
   else if (currentView === "amateur") renderAmateurRadio();
   else if (currentView === "scanner") renderScanner();
+  else if (currentView === "analysis") renderSignalAnalysis();
+  else if (currentView === "pocsag") renderPocsag();
+  else if (currentView === "paging") renderPaging();
+  else if (currentView === "digital") renderDigitalDecoders();
+  else if (currentView === "telemetry") renderTelemetry();
+  else if (currentView === "tracking") renderTracking();
+  else if (currentView === "sstv") renderSstv();
   else if (currentView === "adsb") renderAdsb();
   else if (currentView === "compatibility") renderCompatibility();
   else if (currentView === "diagnostics") renderDiagnostics();
@@ -636,27 +774,42 @@ function renderPreflight(host) {
 }
 
 function renderHome() {
-  staticView(`<section class="view">
-    ${pageHeading("BROWSER-NATIVE RECEIVER", "Start with a source", "Connect a supported Realtek RTL2832U-based Software-Defined Radio (SDR) receiver, enter an explicit simulation, or replay a local unsigned 8-bit interleaved In-phase and Quadrature capture.", `<button id="homeConnect" class="primary-button" type="button">Connect RTL-SDR</button><button id="homeSimulation" class="secondary-button" type="button">Enter Simulation Mode</button>`)}
-    <div class="workflow-strip" aria-label="Fundamental workflow"><span class="workflow-step active">CONNECT</span><span class="workflow-step">TUNE</span><span class="workflow-step">INSPECT</span><span class="workflow-step">DEMODULATE</span><span class="workflow-step">DECODE</span><span class="workflow-step">CAPTURE</span><span class="workflow-step">REVIEW</span><span class="workflow-step">EXPORT</span></div>
-    <div class="grid two">
-      <article class="card"><div class="card-title-row"><div><span class="eyebrow">PREFLIGHT</span><h2>Browser and hosting</h2></div><span class="badge ${preflight.ok ? "ready" : "locked"}">${preflight.ok ? "READY" : "ACTION REQUIRED"}</span></div><p>The live-radio path requires a secure context, Web Universal Serial Bus (WebUSB), WebAssembly, and a processing worker. Shared memory is optional in this compatibility build.</p><div id="homePreflight" class="preflight-list"></div></article>
-      <article class="card"><div class="card-title-row"><div><span class="eyebrow">DEVELOPMENT TRUTH</span><h2>MAYHEM RTL v${APP_VERSION}</h2></div><span class="badge ready">v${APP_VERSION} ACTIVE</span></div><p>The reference RTL2838UHIDIR receive/high-rate path is physically validated; the repaired browser-audio path still awaits a focused operator re-check. This release adds USB, LSB, CW, and the Amateur Radio workspace on top of the Scanner, local Automatic Dependent Surveillance–Broadcast (ADS-B) decoder, and Broadcast AM/FM Radio workflow. SSB/CW are deterministic-fixture tested and await on-air validation.</p><div class="metric-grid"><div class="metric"><span class="label">Upstream</span><strong class="value">44736b9c</strong></div><div class="metric"><span class="label">Transport reference</span><strong class="value">5699cec2</strong></div><div class="metric"><span class="label">Network</span><strong class="value">local only</strong></div><div class="metric"><span class="label">Transmit</span><strong class="value">unavailable</strong></div></div></article>
+  const connection = connectionPresentation();
+  const preflightClass = preflight.ok ? "advanced-control" : "";
+  staticView(`<section class="view home-view">
+    ${pageHeading("MAYHEM RTL", "What do you want to do?", "Choose a source once, then move directly into listening, decoding, analysis, or review. All processing stays local to this browser.", `<button id="homeConnect" class="primary-button" type="button">Connect RTL-SDR</button><button id="homeSimulation" class="secondary-button" type="button">Simulation</button><button id="homeReplay" class="secondary-button" type="button">Replay capture</button>`)}
+    <article class="source-summary-card ${sourceType === "none" ? "idle" : "active"}">
+      <div><span class="eyebrow">CURRENT SOURCE</span><strong>${connection.label}</strong><span>${sourceRunning ? "Sample stream is running" : sourceType === "none" ? "No source selected" : "Source ready; receiver stopped"}</span></div>
+      <div class="source-summary-actions"><button id="homeOpenReceiver" class="${sourceType === "none" ? "secondary-button" : "primary-button"}" type="button">Open Receiver</button>${sourceType !== "none" ? `<button id="homeDisconnect" class="secondary-button" type="button">Disconnect</button>` : ""}</div>
+    </article>
+    <div class="task-grid" aria-label="Primary workflows">
+      <article class="task-card"><span class="task-icon">♫</span><div><span class="eyebrow">LISTEN</span><h2>Radio</h2><p>Everyday tuning, broadcast radio, amateur SSB/CW, and scanning.</p></div><div class="task-actions"><button type="button" data-home-view="broadcast">Broadcast</button><button type="button" data-home-view="amateur">Amateur</button><button type="button" data-home-view="receiver">Receiver</button></div></article>
+      <article class="task-card accent"><span class="task-icon">▧</span><div><span class="eyebrow">VIEW & DECODE</span><h2>Signals into information</h2><p>SSTV images, paging, digital modes, telemetry, aircraft, vessels, sondes, and beacons.</p></div><div class="task-actions"><button id="homeOpenSstv" type="button" data-home-view="sstv">SSTV</button><button id="homeOpenDigital" type="button" data-home-view="digital">Digital</button><button type="button" data-home-view="tracking">Tracking</button></div></article>
+      <article class="task-card"><span class="task-icon">⌁</span><div><span class="eyebrow">ANALYZE</span><h2>Find and inspect</h2><p>Spectrum tools, activity detection, wideband sweeps, signal hunting, and oscilloscope views.</p></div><div class="task-actions"><button id="homeOpenAnalysis" type="button" data-home-view="analysis">Signal Analysis</button><button id="homeOpenLibrary" type="button" data-home-view="applications">Receiver Library</button></div></article>
+      <article class="task-card"><span class="task-icon">●</span><div><span class="eyebrow">REVIEW</span><h2>Keep useful evidence</h2><p>Save stations, capture raw IQ, replay recordings, and export local results.</p></div><div class="task-actions"><button type="button" data-home-view="stations">Stations</button><button id="homeOpenCaptures" type="button" data-home-view="captures">Captures</button><button type="button" data-home-view="replay">Replay</button></div></article>
     </div>
-    <div class="grid three">
-      <article class="card"><span class="eyebrow">LIVE</span><h2>RTL2832U through WebUSB</h2><p>Permission begins only from the Connect button. Device descriptors are validated before vendor control transfers are issued.</p><div class="card-actions"><button id="homeConnect2" class="primary-button" type="button">Connect RTL-SDR</button></div></article>
-      <article class="card"><span class="eyebrow">DEVELOPMENT</span><h2>Explicit simulation</h2><p>Generate known local signals without presenting them as live radio. A persistent banner remains visible.</p><div class="card-actions"><button id="homeSimulation2" class="secondary-button" type="button">Load Demo Signal</button></div></article>
-      <article class="card"><span class="eyebrow">OFFLINE REVIEW</span><h2>Replay a local capture</h2><p>Open a raw local capture and optional metadata document. Nothing is uploaded.</p><div class="card-actions"><button id="homeReplay" class="secondary-button" type="button">Open Replay</button></div></article>
+    <div class="grid two ${preflightClass}">
+      <article class="card"><div class="card-title-row"><div><span class="eyebrow">PREFLIGHT</span><h2>Browser and hosting</h2></div><span class="badge ${preflight.ok ? "ready" : "locked"}">${preflight.ok ? "READY" : "ACTION REQUIRED"}</span></div><p>${preflight.ok ? "Live-radio prerequisites are available. Detailed checks stay out of the everyday workflow unless you need them." : "One or more prerequisites block the live-radio path. Review the failed checks before connecting."}</p><div id="homePreflight" class="preflight-list"></div></article>
+      <article class="card"><div class="card-title-row"><div><span class="eyebrow">BUILD</span><h2>v${APP_VERSION}</h2></div><span class="badge ready">RECEIVE ONLY</span></div><p>The interface is organized around tasks rather than implementation layers. Advanced Mode retains compatibility, diagnostics, native-core, transport, and performance detail when needed.</p><div class="metric-grid"><div class="metric"><span class="label">Network</span><strong class="value">local only</strong></div><div class="metric"><span class="label">Transmit</span><strong class="value">unavailable</strong></div><div class="metric"><span class="label">Apps</span><strong class="value">${APPLICATIONS.length}</strong></div><div class="metric"><span class="label">Project schema</span><strong class="value">12</strong></div></div></article>
     </div>
   </section>`);
-  renderPreflight($("homePreflight"));
+  if ($("homePreflight")) renderPreflight($("homePreflight"));
   $("homeConnect").addEventListener("click", () => connectRadio());
-  $("homeConnect2").addEventListener("click", () => connectRadio());
   $("homeSimulation").addEventListener("click", () => enterSimulation());
-  $("homeSimulation2").addEventListener("click", () => enterSimulation());
   $("homeReplay").addEventListener("click", () => navigate("replay"));
+  $("homeOpenReceiver").addEventListener("click", () => sourceType === "none" ? connectRadio() : navigate("receiver"));
+  $("homeDisconnect")?.addEventListener("click", disconnectSource);
+  document.querySelectorAll("[data-home-view]").forEach((button) => button.addEventListener("click", () => {
+    const view = button.dataset.homeView;
+    if (view === "broadcast") {
+      navigate("broadcast");
+      applyBroadcastBand(currentSettings().broadcastBand === "am" ? BroadcastBand.AM : BroadcastBand.FM, { restart: true }).catch((error) => presentError("Broadcast preset could not be applied", error, { receivingStopped: !sourceRunning }));
+    } else if (view === "amateur") {
+      navigate("amateur");
+      applyAmateurBand(currentSettings().amateurBand, { restart: true, preserveMode: true }).catch((error) => presentError("Amateur Radio preset could not be applied", error, { receivingStopped: !sourceRunning }));
+    } else navigate(view);
+  }));
 }
-
 function renderReceiver() {
   const settings = currentSettings();
   const actual = effectiveActual();
@@ -675,7 +828,6 @@ function renderReceiver() {
       <div class="receiver-control grow"><label for="quickSquelch">Squelch <span id="quickSquelchReadout">${settings.squelchDb.toFixed(0)} dBFS</span></label><input id="quickSquelch" type="range" min="-140" max="-5" step="1"></div>
       <div class="receiver-action-cluster">
         <button id="quickStart" class="primary-button" type="button">Start Receiver</button>
-        <button id="quickStop" class="secondary-button" type="button">Stop Receiver</button>
         <button id="quickAudioEnable" class="primary-button" type="button">Enable Audio</button>
         <button id="quickMute" class="secondary-button" type="button">Mute</button>
         <button id="quickCapture" class="secondary-button" type="button">Start Capture</button>
@@ -730,8 +882,7 @@ function renderReceiver() {
   $("clearPeak").addEventListener("click", () => { spectrumView.clearPeak(); processing?.updateSettings({ peakHold: settings.peakHold }, true); });
   $("clearWaterfall").addEventListener("click", () => spectrumView.clearWaterfall());
   $("exportScreenshot").addEventListener("click", exportScreenshot);
-  $("quickStart").addEventListener("click", startSource);
-  $("quickStop").addEventListener("click", () => stopSource("User stopped receiver"));
+  $("quickStart").addEventListener("click", () => sourceRunning ? stopSource("User stopped receiver") : startSource());
   $("quickCapture").addEventListener("click", () => captureStore?.activeStatus ? stopCapture() : startCapture());
   $("quickStation").addEventListener("click", saveCurrentStation);
   $("receiverSourceButton").addEventListener("click", () => sourceType === "none" ? navigate("home") : disconnectSource());
@@ -761,7 +912,7 @@ function updateReceiverQuickGain() {
   if (!slider || !wrap) return;
   slider.value = String(settings.gainDb);
   slider.disabled = sourceType !== "live" || settings.gainMode === "automatic";
-  wrap.classList.toggle("inactive", settings.gainMode === "automatic");
+  wrap.classList.toggle("hidden", settings.gainMode === "automatic");
   if ($("quickGainReadout")) $("quickGainReadout").textContent = `${settings.gainDb.toFixed(1)} dB`;
 }
 
@@ -781,39 +932,79 @@ function bindSpectrumInteractions() {
 
 function updateReceiverButtons() {
   if (!$("quickStart")) return;
-  $("quickStart").disabled = sourceRunning || sourceType === "none" || (sourceType === "replay" && !replay.file);
-  $("quickStop").disabled = !sourceRunning;
+  $("quickStart").disabled = !sourceRunning && (sourceType === "none" || (sourceType === "replay" && !replay.file));
+  $("quickStart").textContent = sourceRunning ? "Stop Receiver" : "Start Receiver";
+  $("quickStart").className = sourceRunning ? "danger-button" : "primary-button";
   $("quickCapture").disabled = !sourceRunning || !captureStore;
   $("quickCapture").textContent = captureStore?.activeStatus ? "Stop Capture" : "Start Capture";
   $("receiverSourceButton").textContent = sourceType === "none" ? "Choose source" : "Disconnect source";
   updateAudioControls();
 }
 
-function renderApplications() {
-  staticView(`<section class="view">${pageHeading("APPLICATION SUITE", "Compatibility-aware launcher", "All initial receive, utility, and transmit categories remain visible. Unavailable functions explain the exact reason instead of exposing decorative controls.", `<button id="appMatrixButton" class="secondary-button" type="button">Open matrix</button>`)}<div id="applicationGrid" class="app-grid"></div></section>`);
+const APPLICATION_LIBRARY_GROUPS = Object.freeze({
+  listen: new Set(["spectrum", "waterfall", "wfm", "nfm", "am", "usb", "lsb", "cw", "broadcast", "amateur", "scanner"]),
+  decode: new Set(["sstvrx", "pocsag", "flexrx", "twotone", "afsk", "aprs", "acars", "rtty", "morse", "adsbrx", "aisrx", "sonde", "epirbrx", "tpms", "weather"]),
+  analyze: new Set(["level", "detector", "foxhunt", "search", "lookingglass", "signalhunter", "timesink", "capture"]),
+  review: new Set(["replay"]),
+  system: new Set(["simulation", "diagnostics", "radiosetup", "compatibility", "about"])
+});
+const FEATURED_APPLICATIONS = new Set(["broadcast", "amateur", "scanner", "sstvrx", "aprs", "pocsag", "adsbrx", "aisrx", "tpms", "signalhunter", "capture", "replay"]);
+function applicationLibraryGroup(id) {
+  for (const [group, ids] of Object.entries(APPLICATION_LIBRARY_GROUPS)) if (ids.has(id)) return group;
+  return "other";
+}
+function applicationLibraryMatches(application, evaluation) {
+  const query = applicationLibraryQuery.trim().toLowerCase();
+  const group = applicationLibraryGroup(application.id);
+  if (applicationLibraryFilter === "featured" && !FEATURED_APPLICATIONS.has(application.id)) return false;
+  if (["listen", "decode", "analyze", "review", "system"].includes(applicationLibraryFilter) && group !== applicationLibraryFilter) return false;
+  if (applicationLibraryFilter === "unavailable" && evaluation.available) return false;
+  if (applicationLibraryFilter !== "unavailable" && applicationLibraryFilter !== "all" && application.requiresTransmit) return false;
+  if (!query) return true;
+  const haystack = [application.id, application.name, application.category, application.verificationState, group, ...(application.limitations || [])].join(" ").toLowerCase();
+  return haystack.includes(query);
+}
+function renderApplicationGrid() {
   const host = $("applicationGrid");
+  if (!host) return;
+  clear(host);
+  const matches = [];
   for (const application of APPLICATIONS) {
     const evaluation = evaluateApplication(application, connectedCaps());
-    const card = node("article", { class: "card app-card" });
+    if (!applicationLibraryMatches(application, evaluation)) continue;
+    matches.push({ application, evaluation });
+  }
+  if ($("applicationCount")) $("applicationCount").textContent = `${matches.length} shown`;
+  if (!matches.length) {
+    host.append(emptyState("No matching receivers or tools", "Change the category filter or clear the search field."));
+    return;
+  }
+  for (const { application, evaluation } of matches) {
+    const group = applicationLibraryGroup(application.id);
+    const card = node("article", { class: "card app-card compact-app-card" });
     const top = node("div", { class: "card-title-row" },
       node("div", { class: "app-icon", text: application.icon }),
-      node("span", { class: `badge ${evaluation.available ? "ready" : application.requiresTransmit ? "locked" : "partial"}`, text: evaluation.state.toUpperCase() })
+      node("span", { class: `badge ${evaluation.available ? "ready" : application.requiresTransmit ? "locked" : "partial"}`, text: evaluation.available ? "AVAILABLE" : evaluation.state.toUpperCase() })
     );
     const heading = node("h2", { text: application.name });
-    const meta = node("div", { class: "app-meta" }, node("span", { class: "badge", text: application.category }), node("span", { class: "badge", text: application.verificationState }));
-    const requirements = node("ul", { class: "requirement-list" });
-    if (application.requiresReceive) requirements.append(node("li", { text: "Requires receive samples" }));
-    if (application.requiresTransmit) requirements.append(node("li", { text: "Requires transmission — unavailable" }));
-    if (application.requiresAudio) requirements.append(node("li", { text: "Requires browser audio pipeline" }));
-    for (const limitation of application.limitations.slice(0, 2)) requirements.append(node("li", { text: limitation }));
-    const action = node("button", { class: evaluation.available ? "primary-button" : "secondary-button", type: "button", text: evaluation.available ? "Open" : "Why unavailable" });
+    const meta = node("div", { class: "app-meta" }, node("span", { class: "badge", text: group }), node("span", { class: "badge", text: application.verificationState }));
+    const summary = node("p", { class: "app-summary", text: application.limitations?.[0] || (evaluation.available ? "Ready for local use." : evaluation.reason) });
+    const action = node("button", { class: evaluation.available ? "primary-button" : "secondary-button", type: "button", text: evaluation.available ? "Open" : "Details" });
     action.addEventListener("click", () => openApplication(application, evaluation));
-    card.append(top, heading, meta, requirements, node("div", { class: "card-actions" }, action));
+    card.append(top, heading, meta, summary, node("div", { class: "card-actions" }, action));
     host.append(card);
   }
-  $("appMatrixButton").addEventListener("click", () => navigate("compatibility"));
 }
-
+function renderApplications() {
+  const filters = [["featured","Featured"],["listen","Listen"],["decode","Decode"],["analyze","Analyze"],["review","Review"],["system","System"],["unavailable","Unavailable"],["all","All"]];
+  staticView(`<section class="view receiver-library-view">${pageHeading("RECEIVER LIBRARY", "Find a receiver or tool", "Search by task or signal type. Receive-only workflows stay prominent; unavailable transmit functions are separated instead of competing for attention.", `<button id="appMatrixButton" class="secondary-button advanced-control" type="button">Compatibility matrix</button>`)}
+    <div class="library-toolbar"><label class="library-search"><span class="sr-only">Search receiver library</span><input id="applicationSearch" type="search" autocomplete="off" placeholder="Search receivers, protocols, or tools…" value="${applicationLibraryQuery.replaceAll('"','&quot;')}"></label><div class="library-filter-row">${filters.map(([id,label])=>`<button type="button" class="library-filter ${applicationLibraryFilter===id?"active":""}" data-library-filter="${id}">${label}</button>`).join("")}<span id="applicationCount" class="library-count"></span></div></div>
+    <div id="applicationGrid" class="app-grid"></div></section>`);
+  renderApplicationGrid();
+  $("applicationSearch").addEventListener("input", (event) => { applicationLibraryQuery = event.target.value; renderApplicationGrid(); });
+  document.querySelectorAll("[data-library-filter]").forEach((button) => button.addEventListener("click", () => { applicationLibraryFilter = button.dataset.libraryFilter; document.querySelectorAll("[data-library-filter]").forEach((b) => b.classList.toggle("active", b === button)); renderApplicationGrid(); }));
+  $("appMatrixButton")?.addEventListener("click", () => navigate("compatibility"));
+}
 function openApplication(application, evaluation) {
   activeApplicationId = application.id;
   if (!evaluation.available) {
@@ -827,6 +1018,13 @@ function openApplication(application, evaluation) {
   else if (application.id === "amateur") { navigate("amateur"); applyAmateurBand(currentSettings().amateurBand, { restart: true, preserveMode: true }).catch((error) => presentError("Amateur Radio preset could not be applied", error, { receivingStopped: !sourceRunning })); }
   else if (application.id === "broadcast") { navigate("broadcast"); applyBroadcastBand(currentSettings().broadcastBand === "am" ? BroadcastBand.AM : BroadcastBand.FM, { restart: true }).catch((error) => presentError("Broadcast preset could not be applied", error, { receivingStopped: !sourceRunning })); }
   else if (application.id === "scanner") navigate("scanner");
+  else if (ANALYSIS_APPS.includes(application.id)) { analysisTool = application.id === "lookingglass" ? "lookingglass" : application.id === "signalhunter" ? "signalhunter" : application.id === "foxhunt" ? "foxhunt" : application.id === "timesink" ? "timesink" : application.id; projectStore.update((project) => { project.settings.analysisTool = analysisTool; }); navigate("analysis"); }
+  else if (application.id === "pocsag") navigate("pocsag");
+  else if (["flexrx", "twotone"].includes(application.id)) { pagingTool = application.id === "flexrx" ? "flex" : "twotone"; projectStore.update((project) => { project.settings.pagingTool = pagingTool; }); navigate("paging"); }
+  else if (DIGITAL_APPS.includes(application.id)) { digitalTool = application.id; projectStore.update((project) => { project.settings.digitalTool = digitalTool; }); navigate("digital"); }
+  else if (TELEMETRY_APPS.includes(application.id)) { telemetryTool = application.id; projectStore.update((project) => { project.settings.telemetryTool = telemetryTool; }); navigate("telemetry"); }
+  else if (["aisrx", "sonde", "epirbrx"].includes(application.id)) { trackingTool = application.id === "aisrx" ? "ais" : application.id === "sonde" ? "radiosonde" : "epirb"; projectStore.update((project) => { project.settings.trackingTool = trackingTool; }); navigate("tracking"); }
+  else if (application.id === "sstvrx") navigate("sstv");
   else if (application.id === "adsbrx") navigate("adsb");
   else if (application.id === "simulation") enterSimulation();
   else if (application.id === "replay") navigate("replay");
@@ -995,7 +1193,7 @@ async function startReplayFromPage() {
   await selectReplaySource();
   const rawSpeed = $("replaySpeed").value;
   await startSource({ replaySpeed: rawSpeed === "Infinity" ? Infinity : Number(rawSpeed) });
-  navigate("receiver");
+  navigate(replay.metadata?.applicationId === "sstvrx" ? "sstv" : "receiver");
 }
 
 async function selectReplaySource() {
@@ -1007,6 +1205,18 @@ async function selectReplaySource() {
   if (Number.isFinite(replay.metadata?.squelchDb)) setSquelch(replay.metadata.squelchDb);
   for (const [key, value] of [["ritHz", replay.metadata?.ritHz], ["cwPitchHz", replay.metadata?.cwPitchHz], ["ssbLowCutHz", replay.metadata?.ssbLowCutHz]]) if (Number.isFinite(value)) projectStore.update((project) => { project.settings[key] = value; });
   if (["off", "slow", "medium", "fast"].includes(replay.metadata?.agcMode)) projectStore.update((project) => { project.settings.agcMode = replay.metadata.agcMode; });
+  if (replay.metadata?.applicationId === "sstvrx") {
+    projectStore.update((project) => {
+      if (["auto", "usb", "fm"].includes(replay.metadata?.sstvInputMode)) project.settings.sstvInputMode = replay.metadata.sstvInputMode;
+      if (SSTV_MODE_IDS.includes(replay.metadata?.sstvMode)) project.settings.sstvMode = replay.metadata.sstvMode;
+      if (typeof replay.metadata?.sstvAutoVis === "boolean") project.settings.sstvAutoVis = replay.metadata.sstvAutoVis;
+      if (Number.isFinite(Number(replay.metadata?.sstvPhaseOffset))) project.settings.sstvPhaseOffset = Math.max(-160, Math.min(160, Number(replay.metadata.sstvPhaseOffset)));
+      if (Number.isFinite(Number(replay.metadata?.sstvSlant))) project.settings.sstvSlant = Math.max(-100, Math.min(100, Number(replay.metadata.sstvSlant)));
+      if (Number.isFinite(Number(replay.metadata?.centerFrequencyHz))) project.settings.sstvFrequencyHz = Number(replay.metadata.centerFrequencyHz);
+    });
+    resetSstvImage({ preserveMode: false });
+    activeApplicationId = "sstvrx";
+  }
   processing?.reset();
   stateMachine.force(ConnectionState.REPLAY, "Local capture selected");
   updateGlobalStatus();
@@ -1379,6 +1589,1457 @@ function exportScannerHits() {
   downloadBlob(new Blob([lines.map((row) => row.map(escapeCsv).join(",")).join("\n") + "\n"], { type: "text/csv" }), `mayhem-rtl-scan-${Date.now()}.csv`);
 }
 
+
+function analysisLabel(tool) {
+  return ({ level: "Level", detector: "Detector", foxhunt: "Fox Hunt", search: "Search", lookingglass: "Looking Glass", signalhunter: "Signal Hunter", timesink: "Time Sink" })[tool] || "Level";
+}
+
+function analysisAppId(tool = analysisTool) { return ANALYSIS_TO_APP[tool] || "level"; }
+
+function updateSignalAnalysis(detail = {}) {
+  const level = Number(detail.levelDbfs);
+  if (!Number.isFinite(level)) return;
+  const now = Date.now();
+  levelHistory.add(level, now);
+  const settings = currentSettings();
+  activityDetector.configure({
+    thresholdDbfs: settings.detectorThresholdDbfs,
+    hysteresisDb: settings.detectorHysteresisDb,
+    minActiveMs: settings.detectorMinActiveMs,
+    releaseMs: settings.detectorReleaseMs
+  });
+  activityDetector.process(level, now);
+
+  const threshold = Number(settings.hunterThresholdDbfs ?? -45);
+  if (signalHunterState.armed && sourceRunning) {
+    if (!signalHunterState.above && level >= threshold) {
+      signalHunterState.above = true;
+      triggerSignalHunter(level).catch((error) => {
+        signalHunterState.error = error.message;
+        signalHunterState.capturing = false;
+        log.error("Signal Hunter trigger failed", { message: error.message });
+        renderSignalAnalysisLive();
+      });
+    } else if (signalHunterState.above && level < threshold - 3) signalHunterState.above = false;
+  }
+  if (currentView === "analysis") renderSignalAnalysisLive();
+}
+
+function updateSpectrumAnalysis(detail) {
+  const settings = currentSettings();
+  if (detail?.spectrum?.length) {
+    searchPeaks = findSpectrumPeaks(detail.spectrum, {
+      centerFrequencyHz: Number(detail.frequency),
+      sampleRate: Number(detail.sampleRate),
+      thresholdDbfs: Number(settings.searchThresholdDbfs),
+      minProminenceDb: Number(settings.searchProminenceDb),
+      minSeparationHz: Number(settings.searchSeparationHz),
+      maxPeaks: 24
+    });
+  }
+  if (currentView === "analysis" && ["search", "lookingglass"].includes(analysisTool)) renderSignalAnalysisLive();
+}
+
+function resolveSpectrumWaiters(detail) {
+  const keep = [];
+  for (const waiter of spectrumWaiters) {
+    if (waiter.token !== lookingGlassState.token) { clearTimeout(waiter.timeout); waiter.reject(new Error("Sweep cancelled.")); continue; }
+    if (Math.abs(Number(detail.frequency) - waiter.frequencyHz) <= Math.max(2_000, Number(detail.sampleRate) * 0.01)) {
+      clearTimeout(waiter.timeout); waiter.resolve(detail);
+    } else keep.push(waiter);
+  }
+  spectrumWaiters = keep;
+}
+
+function waitForSpectrumAt(frequencyHz, token, timeoutMs = 2500) {
+  return new Promise((resolve, reject) => {
+    const waiter = { frequencyHz: Number(frequencyHz), token, resolve, reject, timeout: null };
+    waiter.timeout = setTimeout(() => {
+      spectrumWaiters = spectrumWaiters.filter((entry) => entry !== waiter);
+      reject(new Error(`No fresh spectrum arrived at ${formatFrequency(frequencyHz, 4)}.`));
+    }, timeoutMs);
+    spectrumWaiters.push(waiter);
+  });
+}
+
+function resizeAnalysisCanvas(canvas, heightCss = 220) {
+  if (!canvas) return null;
+  const ratio = Math.max(1, Math.min(2, globalThis.devicePixelRatio || 1));
+  const width = Math.max(320, Math.round((canvas.clientWidth || 720) * ratio));
+  const height = Math.max(120, Math.round(heightCss * ratio));
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
+  return { width, height, ratio, ctx: canvas.getContext("2d", { alpha: false }) };
+}
+
+function drawLevelTrend(canvas, points, { floorDbfs = -110, ceilingDbfs = -10 } = {}) {
+  const surface = resizeAnalysisCanvas(canvas, 220); if (!surface) return;
+  const { ctx, width, height, ratio } = surface;
+  ctx.fillStyle = "#050805"; ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = "rgba(104,126,108,.25)"; ctx.lineWidth = 1;
+  for (let y = 0; y <= 5; y++) { const py = y * height / 5; ctx.beginPath(); ctx.moveTo(0, py); ctx.lineTo(width, py); ctx.stroke(); }
+  if (!points?.length) return;
+  const minT = points[0].t; const maxT = Math.max(minT + 1, points.at(-1).t);
+  ctx.strokeStyle = "rgba(215,255,63,.95)"; ctx.lineWidth = 1.5 * ratio; ctx.beginPath();
+  for (let index = 0; index < points.length; index++) {
+    const point = points[index];
+    const x = (point.t - minT) / (maxT - minT) * width;
+    const y = height - Math.max(0, Math.min(1, (point.levelDbfs - floorDbfs) / Math.max(1, ceilingDbfs - floorDbfs))) * height;
+    if (!index) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function drawLookingGlass(canvas, snapshot) {
+  const surface = resizeAnalysisCanvas(canvas, 260); if (!surface) return;
+  const { ctx, width, height, ratio } = surface;
+  ctx.fillStyle = "#050805"; ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = "rgba(104,126,108,.25)"; ctx.lineWidth = 1;
+  for (let y = 1; y < 5; y++) { const py = y * height / 5; ctx.beginPath(); ctx.moveTo(0, py); ctx.lineTo(width, py); ctx.stroke(); }
+  if (!snapshot?.values?.length) return;
+  ctx.strokeStyle = "rgba(91,231,255,.9)"; ctx.lineWidth = 1.25 * ratio; ctx.beginPath();
+  for (let index = 0; index < snapshot.values.length; index++) {
+    const x = index / Math.max(1, snapshot.values.length - 1) * width;
+    const db = Number(snapshot.values[index]);
+    const y = height - Math.max(0, Math.min(1, (db + 120) / 120)) * height;
+    if (!index) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function renderAnalysisSourceHeader() {
+  const actual = effectiveActual();
+  const sourceButton = sourceType === "none" ? "Connect RTL-SDR" : sourceRunning ? "Stop Receiver" : "Start Receiver";
+  return `<article class="card analysis-source-card"><div><span class="eyebrow">SOURCE</span><h2>${sourceRunning ? "Sample stream active" : sourceType === "none" ? "No source selected" : "Source ready — receiver stopped"}</h2><p>${selectedSourceLabel()} · ${formatFrequency(actual.frequencyHz, 4)} · ${formatRate(actual.sampleRate)}</p></div><button id="analysisSourceButton" class="${sourceType === "none" ? "primary-button" : "secondary-button"}" type="button">${sourceButton}</button></article>`;
+}
+
+function renderSignalAnalysis() {
+  analysisTool = currentSettings().analysisTool || analysisTool || "level";
+  activeApplicationId = analysisAppId();
+  staticView(`<section class="view analysis-view">
+    ${pageHeading("SIGNAL ANALYSIS", `${analysisLabel(analysisTool)} instrument`, "Shared receive-analysis tools built on the same continuous IQ, spectrum, tuning, and local-capture pipeline. Detections indicate measured energy only; they do not identify a transmitter unless a protocol decoder does so separately.", `<button id="analysisReceiver" class="secondary-button" type="button">Open Receiver</button>`)}
+    <div class="analysis-tabs" role="tablist" aria-label="Signal analysis tools">${Object.keys(ANALYSIS_TO_APP).map((tool) => `<button class="analysis-tab ${analysisTool === tool ? "active" : ""}" type="button" data-analysis-tool="${tool}">${analysisLabel(tool)}</button>`).join("")}</div>
+    ${renderAnalysisSourceHeader()}
+    <div id="analysisToolHost"></div>
+  </section>`);
+  $("analysisReceiver").addEventListener("click", () => navigate("receiver"));
+  $("analysisSourceButton").addEventListener("click", async () => {
+    if (sourceType === "none") await connectRadio({ view: "analysis", applicationId: analysisAppId() });
+    else if (sourceRunning) await stopSource("Signal analysis receiver stopped");
+    else await startSource();
+    if (currentView === "analysis") renderSignalAnalysis();
+  });
+  document.querySelectorAll("[data-analysis-tool]").forEach((button) => button.addEventListener("click", () => selectAnalysisTool(button.dataset.analysisTool)));
+  renderAnalysisTool();
+  syncAudioProcessing({ resetDecoder: false });
+}
+
+function selectAnalysisTool(tool) {
+  if (!ANALYSIS_TO_APP[tool]) return;
+  if (analysisTool === "lookingglass" && tool !== "lookingglass") stopLookingGlassSweep({ restore: true });
+  if (analysisTool === "signalhunter" && tool !== "signalhunter") disarmSignalHunter();
+  analysisTool = tool;
+  activeApplicationId = analysisAppId(tool);
+  projectStore.update((project) => { project.settings.analysisTool = tool; });
+  timeSinkView?.destroy(); timeSinkView = null;
+  syncAudioProcessing();
+  if (currentView === "analysis") renderSignalAnalysis();
+}
+
+function renderAnalysisTool() {
+  const host = $("analysisToolHost"); if (!host) return;
+  const settings = currentSettings();
+  timeSinkView?.destroy(); timeSinkView = null;
+  if (analysisTool === "level") {
+    host.innerHTML = `<div class="grid two"><article class="card"><span class="eyebrow">LEVEL</span><div class="analysis-big-value" id="levelCurrent">— dBFS</div><div class="signal-meter"><div id="levelMeterFill" class="signal-meter-fill"></div></div><div class="grid three compact-grid"><div class="metric"><span class="label">Peak</span><strong id="levelPeak">—</strong></div><div class="metric"><span class="label">Mean</span><strong id="levelMean">—</strong></div><div class="metric"><span class="label">Noise floor</span><strong id="levelNoise">—</strong></div></div><div class="card-actions"><button id="levelClear" class="secondary-button" type="button">Clear history</button></div></article><article class="card"><span class="eyebrow">ROLLING HISTORY</span><canvas id="levelTrend" class="analysis-canvas"></canvas></article></div>`;
+    $("levelClear").addEventListener("click", () => { levelHistory.clear(); renderSignalAnalysisLive(); });
+  } else if (analysisTool === "detector") {
+    host.innerHTML = `<div class="grid two"><article class="card"><span class="eyebrow">ACTIVITY DETECTOR</span><div class="grid two compact-grid"><div class="form-row"><label for="detectorThreshold">Threshold</label><div class="input-group"><input id="detectorThreshold" type="number" min="-140" max="0" step="1" value="${settings.detectorThresholdDbfs}"><span class="unit">dBFS</span></div></div><div class="form-row"><label for="detectorHysteresis">Hysteresis</label><div class="input-group"><input id="detectorHysteresis" type="number" min="0" max="30" step="1" value="${settings.detectorHysteresisDb}"><span class="unit">dB</span></div></div><div class="form-row"><label for="detectorMin">Minimum active</label><div class="input-group"><input id="detectorMin" type="number" min="0" max="5000" step="10" value="${settings.detectorMinActiveMs}"><span class="unit">ms</span></div></div><div class="form-row"><label for="detectorRelease">Release</label><div class="input-group"><input id="detectorRelease" type="number" min="0" max="10000" step="10" value="${settings.detectorReleaseMs}"><span class="unit">ms</span></div></div></div><div id="detectorState" class="notice-box"></div><div class="card-actions"><button id="detectorClear" class="secondary-button" type="button">Clear events</button></div></article><article class="card"><span class="eyebrow">EVENTS</span><div id="detectorEvents"></div></article></div>`;
+    for (const [id, key] of [["detectorThreshold","detectorThresholdDbfs"],["detectorHysteresis","detectorHysteresisDb"],["detectorMin","detectorMinActiveMs"],["detectorRelease","detectorReleaseMs"]]) $(id).addEventListener("change", () => { projectStore.update((project) => { project.settings[key] = Number($(id).value); }); activityDetector.reset(); renderSignalAnalysisLive(); });
+    $("detectorClear").addEventListener("click", () => { activityDetector.reset(); renderSignalAnalysisLive(); });
+  } else if (analysisTool === "foxhunt") {
+    host.innerHTML = `<div class="grid two"><article class="card foxhunt-card"><span class="eyebrow">FOX HUNT</span><div class="analysis-big-value" id="foxLevel">— dBFS</div><div class="signal-meter oversized"><div id="foxMeterFill" class="signal-meter-fill"></div></div><p class="muted-copy">Relative strength only — rotate or move the antenna and compare changes. This is not a calibrated field-strength or automatic-bearing instrument.</p><div class="grid two compact-grid"><div class="form-row"><label for="foxFloor">Meter floor</label><input id="foxFloor" type="number" min="-140" max="-20" value="${settings.foxHuntFloorDbfs}"></div><div class="form-row"><label for="foxCeiling">Meter ceiling</label><input id="foxCeiling" type="number" min="-100" max="0" value="${settings.foxHuntCeilingDbfs}"></div></div></article><article class="card"><span class="eyebrow">RELATIVE TREND</span><canvas id="foxTrend" class="analysis-canvas"></canvas><div class="grid two compact-grid"><div class="metric"><span class="label">Session peak</span><strong id="foxPeak">—</strong></div><div class="metric"><span class="label">Change from mean</span><strong id="foxDelta">—</strong></div></div></article></div>`;
+    for (const [id,key] of [["foxFloor","foxHuntFloorDbfs"],["foxCeiling","foxHuntCeilingDbfs"]]) $(id).addEventListener("change", () => { projectStore.update((project) => { project.settings[key] = Number($(id).value); }); renderSignalAnalysisLive(); });
+  } else if (analysisTool === "search") {
+    host.innerHTML = `<div class="grid two"><article class="card"><span class="eyebrow">PEAK SEARCH</span><div class="grid three compact-grid"><div class="form-row"><label for="searchThreshold">Absolute threshold</label><div class="input-group"><input id="searchThreshold" type="number" min="-140" max="0" value="${settings.searchThresholdDbfs}"><span class="unit">dBFS</span></div></div><div class="form-row"><label for="searchProminence">Above noise</label><div class="input-group"><input id="searchProminence" type="number" min="0" max="60" value="${settings.searchProminenceDb}"><span class="unit">dB</span></div></div><div class="form-row"><label for="searchSeparation">Min separation</label><div class="input-group"><input id="searchSeparation" type="number" min="100" max="1000000" step="100" value="${settings.searchSeparationHz}"><span class="unit">Hz</span></div></div></div><div class="notice-box"><strong>Current passband only</strong><p>Search analyzes the latest FFT inside ${formatRate(effectiveActual().sampleRate)} of instantaneous bandwidth. Use Looking Glass for a multi-tune sweep.</p></div></article><article class="card"><span class="eyebrow">CURRENT NOISE</span><div class="analysis-big-value" id="searchNoise">—</div><p id="searchSummary">No spectrum available.</p></article></div><article class="card"><div class="card-title-row"><div><span class="eyebrow">PEAKS</span><h2>Current local maxima</h2></div><span id="searchCount" class="badge">0</span></div><div id="searchResults"></div></article>`;
+    for (const [id,key] of [["searchThreshold","searchThresholdDbfs"],["searchProminence","searchProminenceDb"],["searchSeparation","searchSeparationHz"]]) $(id).addEventListener("change", () => { projectStore.update((project) => { project.settings[key] = Number($(id).value); }); if (latestSpectrum) updateSpectrumAnalysis(latestSpectrum); });
+  } else if (analysisTool === "lookingglass") {
+    host.innerHTML = `<article class="card"><div class="card-title-row"><div><span class="eyebrow">LOOKING GLASS</span><h2>Stitched max-hold sweep</h2></div><span id="glassState" class="badge">IDLE</span></div><div class="grid four compact-grid"><div class="form-row"><label for="glassStart">Start</label><div class="input-group"><input id="glassStart" type="number" step="0.001" value="${(settings.lookingGlassStartHz/1e6).toFixed(3)}"><span class="unit">MHz</span></div></div><div class="form-row"><label for="glassEnd">End</label><div class="input-group"><input id="glassEnd" type="number" step="0.001" value="${(settings.lookingGlassEndHz/1e6).toFixed(3)}"><span class="unit">MHz</span></div></div><div class="form-row"><label for="glassStep">Slice step</label><div class="input-group"><input id="glassStep" type="number" min="0.01" max="10" step="0.01" value="${(settings.lookingGlassStepHz/1e6).toFixed(3)}"><span class="unit">MHz</span></div></div><div class="form-row"><label for="glassDwell">Dwell</label><div class="input-group"><input id="glassDwell" type="number" min="20" max="5000" step="10" value="${settings.lookingGlassDwellMs}"><span class="unit">ms</span></div></div></div><div class="card-actions"><button id="glassStartButton" class="primary-button" type="button" ${!sourceRunning || sourceType === "replay" ? "disabled" : ""}>Start Sweep</button><button id="glassStopButton" class="secondary-button" type="button" ${!lookingGlassState.running ? "disabled" : ""}>Stop</button><button id="glassClearButton" class="secondary-button" type="button">Clear</button></div><div id="glassStatus" class="notice-box"></div><canvas id="lookingGlassCanvas" class="analysis-canvas tall"></canvas></article>`;
+    $("glassStartButton").addEventListener("click", startLookingGlassSweep);
+    $("glassStopButton").addEventListener("click", () => stopLookingGlassSweep({ restore: true }));
+    $("glassClearButton").addEventListener("click", () => { lookingGlassState.accumulator = null; lookingGlassState.completedAt = null; renderSignalAnalysisLive(); });
+  } else if (analysisTool === "signalhunter") {
+    host.innerHTML = `<div class="grid two"><article class="card"><span class="eyebrow">SIGNAL HUNTER</span><h2>Energy-triggered IQ capture</h2><div class="form-row"><label for="hunterMode">Hunt mode</label><select id="hunterMode"><option value="single">Current frequency</option><option value="range">Range hop</option></select></div><div class="grid three compact-grid"><div class="form-row"><label for="hunterThreshold">Trigger</label><div class="input-group"><input id="hunterThreshold" type="number" min="-140" max="0" value="${settings.hunterThresholdDbfs}"><span class="unit">dBFS</span></div></div><div class="form-row"><label for="hunterSeconds">Capture</label><div class="input-group"><input id="hunterSeconds" type="number" min="1" max="300" value="${settings.hunterCaptureSeconds}"><span class="unit">s</span></div></div><div class="form-row"><label for="hunterCooldown">Cooldown</label><div class="input-group"><input id="hunterCooldown" type="number" min="0" max="60000" step="100" value="${settings.hunterCooldownMs}"><span class="unit">ms</span></div></div></div><div id="hunterRangeControls" class="grid four compact-grid"><div class="form-row"><label for="hunterStart">Start</label><div class="input-group"><input id="hunterStart" type="number" step="0.001" value="${(settings.hunterStartHz/1e6).toFixed(3)}"><span class="unit">MHz</span></div></div><div class="form-row"><label for="hunterEnd">End</label><div class="input-group"><input id="hunterEnd" type="number" step="0.001" value="${(settings.hunterEndHz/1e6).toFixed(3)}"><span class="unit">MHz</span></div></div><div class="form-row"><label for="hunterStep">Step</label><div class="input-group"><input id="hunterStep" type="number" min="0.0001" max="10" step="0.001" value="${(settings.hunterStepHz/1e6).toFixed(6)}"><span class="unit">MHz</span></div></div><div class="form-row"><label for="hunterDwell">Dwell</label><div class="input-group"><input id="hunterDwell" type="number" min="20" max="10000" step="10" value="${settings.hunterDwellMs}"><span class="unit">ms</span></div></div></div><div class="notice-box warning"><strong>Post-trigger capture in v0.8.4</strong><p>The trigger starts a normal local IQ capture when energy crosses the threshold. Range Hop serially retunes the same receive path. Pre-trigger samples are not buffered yet.</p></div><div class="card-actions"><button id="hunterArm" class="${signalHunterState.armed ? "secondary-button" : "primary-button"}" type="button" ${!sourceRunning || !captureStore || sourceType === "replay" ? "disabled" : ""}>${signalHunterState.armed ? "Disarm" : "Arm Hunter"}</button></div></article><article class="card"><span class="eyebrow">HUNTER STATUS</span><div id="hunterStatus" class="notice-box"></div><div class="grid three compact-grid"><div class="metric"><span class="label">Triggers</span><strong id="hunterTriggers">0</strong></div><div class="metric"><span class="label">Hunt frequency</span><strong id="hunterFrequency">—</strong></div><div class="metric"><span class="label">Latest capture</span><strong id="hunterLatest">—</strong></div></div></article></div>`;
+    $("hunterMode").value = settings.hunterMode || "single";
+    const updateHunterRangeVisibility = () => { $("hunterRangeControls").hidden = $("hunterMode").value !== "range"; };
+    updateHunterRangeVisibility();
+    const persistHunter = () => projectStore.update((project) => { project.settings.hunterMode=$("hunterMode").value; project.settings.hunterThresholdDbfs=Number($("hunterThreshold").value); project.settings.hunterCaptureSeconds=Number($("hunterSeconds").value); project.settings.hunterCooldownMs=Number($("hunterCooldown").value); project.settings.hunterStartHz=Math.round(Number($("hunterStart").value)*1e6); project.settings.hunterEndHz=Math.round(Number($("hunterEnd").value)*1e6); project.settings.hunterStepHz=Math.round(Number($("hunterStep").value)*1e6); project.settings.hunterDwellMs=Number($("hunterDwell").value); });
+    for (const id of ["hunterMode","hunterThreshold","hunterSeconds","hunterCooldown","hunterStart","hunterEnd","hunterStep","hunterDwell"]) $(id).addEventListener("change", () => { persistHunter(); updateHunterRangeVisibility(); if (signalHunterState.armed) { disarmSignalHunter(); armSignalHunter(); } renderSignalAnalysisLive(); });
+    $("hunterArm").addEventListener("click", () => { persistHunter(); signalHunterState.armed ? disarmSignalHunter() : armSignalHunter(); renderSignalAnalysis(); });
+  } else if (analysisTool === "timesink") {
+    host.innerHTML = `<article class="card"><div class="card-title-row"><div><span class="eyebrow">TIME SINK</span><h2>Live I/Q oscilloscope</h2></div><span class="badge">WORKER SNAPSHOT</span></div><div class="form-row compact-control"><label for="timeSinkPoints">Displayed points</label><select id="timeSinkPoints"><option value="256">256</option><option value="512">512</option><option value="1024">1024</option><option value="2048">2048</option></select></div><canvas id="timeSinkCanvas" class="analysis-canvas tall"></canvas><div id="timeSinkMeta" class="notice-box"><strong>Waiting for samples</strong><p>Start a sample source to inspect bounded downsampled I/Q snapshots. Raw capture remains the sample-complete evidence path.</p></div></article>`;
+    $("timeSinkPoints").value = String(settings.timeSinkPoints || 512);
+    $("timeSinkPoints").addEventListener("change", () => { projectStore.update((project) => { project.settings.timeSinkPoints = Number($("timeSinkPoints").value); }); syncAudioProcessing(); });
+    timeSinkView = new TimeSinkView($("timeSinkCanvas"));
+    if (latestTimeSeries) timeSinkView.update(latestTimeSeries);
+  }
+  renderSignalAnalysisLive();
+}
+
+function renderSignalAnalysisLive() {
+  if (currentView !== "analysis") return;
+  const settings = currentSettings();
+  const history = levelHistory.snapshot();
+  const level = Number(sourceStats.levelDbfs);
+  if (analysisTool === "level") {
+    if ($("levelCurrent")) $("levelCurrent").textContent = Number.isFinite(level) ? `${level.toFixed(1)} dBFS` : "— dBFS";
+    if ($("levelMeterFill")) $("levelMeterFill").style.width = `${relativeStrength(level, -110, -10) * 100}%`;
+    if ($("levelPeak")) $("levelPeak").textContent = Number.isFinite(history.peakDbfs) ? `${history.peakDbfs.toFixed(1)} dBFS` : "—";
+    if ($("levelMean")) $("levelMean").textContent = Number.isFinite(history.meanDbfs) ? `${history.meanDbfs.toFixed(1)} dBFS` : "—";
+    const floor = latestSpectrum?.spectrum?.length ? estimateNoiseFloorDb(latestSpectrum.spectrum) : null;
+    if ($("levelNoise")) $("levelNoise").textContent = Number.isFinite(floor) ? `${floor.toFixed(1)} dBFS` : "—";
+    drawLevelTrend($("levelTrend"), history.points, { floorDbfs: -110, ceilingDbfs: -10 });
+  } else if (analysisTool === "detector") {
+    const snap = activityDetector.snapshot();
+    if ($("detectorState")) { $("detectorState").className = `notice-box ${snap.active ? "success" : ""}`; $("detectorState").innerHTML = `<strong>${snap.active ? "ACTIVITY PRESENT" : "Waiting for threshold crossing"}</strong><p>${Number.isFinite(level) ? level.toFixed(1)+" dBFS" : "No level yet"} · threshold ${snap.thresholdDbfs} dBFS</p>`; }
+    const host = $("detectorEvents"); if (host) { clear(host); if (!snap.events.length) host.append(emptyState("No completed events", "Events close only after the level remains below threshold minus hysteresis for the configured release time.")); else { const wrap=node("div",{class:"table-wrap"}); const table=node("table"); table.append(node("thead",{},node("tr",{},...['Started','Duration','Peak'].map((x)=>node('th',{text:x}))))); const body=node('tbody'); for (const event of snap.events.slice(0,50)) body.append(node('tr',{},node('td',{text:formatDateTime(new Date(event.startedAt).toISOString())}),node('td',{text:`${(event.durationMs/1000).toFixed(2)} s`}),node('td',{text:`${event.peakDbfs.toFixed(1)} dBFS`}))); table.append(body); wrap.append(table); host.append(wrap); } }
+  } else if (analysisTool === "foxhunt") {
+    const floor = Number(settings.foxHuntFloorDbfs), ceiling = Math.max(floor + 1, Number(settings.foxHuntCeilingDbfs));
+    if ($("foxLevel")) $("foxLevel").textContent = Number.isFinite(level) ? `${level.toFixed(1)} dBFS` : "— dBFS";
+    if ($("foxMeterFill")) $("foxMeterFill").style.width = `${relativeStrength(level, floor, ceiling) * 100}%`;
+    if ($("foxPeak")) $("foxPeak").textContent = Number.isFinite(history.peakDbfs) ? `${history.peakDbfs.toFixed(1)} dBFS` : "—";
+    if ($("foxDelta")) $("foxDelta").textContent = Number.isFinite(level) && Number.isFinite(history.meanDbfs) ? `${(level-history.meanDbfs)>=0?'+':''}${(level-history.meanDbfs).toFixed(1)} dB` : "—";
+    drawLevelTrend($("foxTrend"), history.points, { floorDbfs: floor, ceilingDbfs: ceiling });
+  } else if (analysisTool === "search") {
+    const floor = searchPeaks[0]?.noiseFloorDb ?? null;
+    if ($("searchNoise")) $("searchNoise").textContent = Number.isFinite(floor) ? `${floor.toFixed(1)} dBFS` : "—";
+    if ($("searchSummary")) $("searchSummary").textContent = latestSpectrum ? `${searchPeaks.length} peak${searchPeaks.length===1?'':'s'} in the current ${formatRate(latestSpectrum.sampleRate)} passband.` : "No spectrum available.";
+    if ($("searchCount")) $("searchCount").textContent = String(searchPeaks.length);
+    const host=$("searchResults"); if (host) { clear(host); if (!searchPeaks.length) host.append(emptyState("No qualifying peaks", "Lower the threshold or prominence requirement, or tune to a band with visible activity.")); else { const wrap=node('div',{class:'table-wrap'}); const table=node('table'); table.append(node('thead',{},node('tr',{},...['Frequency','Level','SNR','Prominence','Actions'].map((x)=>node('th',{text:x}))))); const body=node('tbody'); for(const peak of searchPeaks){ const actions=node('td'); actions.append(node('button',{class:'small-button',type:'button',text:'Tune',onclick:()=>tuneTo(peak.frequencyHz)}),' ',node('button',{class:'small-button',type:'button',text:'Mark',onclick:()=>{ projectStore.update((project)=>project.markers.push({id:makeId('marker'),frequencyHz:Math.round(peak.frequencyHz),label:`P${project.markers.length+1}`})); }})); body.append(node('tr',{},node('td',{text:formatFrequency(peak.frequencyHz,4)}),node('td',{text:`${peak.levelDbfs.toFixed(1)} dBFS`}),node('td',{text:`${peak.snrDb.toFixed(1)} dB`}),node('td',{text:`${peak.prominenceDb.toFixed(1)} dB`}),actions)); } table.append(body); wrap.append(table); host.append(wrap); } }
+  } else if (analysisTool === "lookingglass") {
+    const snap = lookingGlassState.accumulator?.snapshot() ?? null;
+    if ($("glassState")) $("glassState").textContent = lookingGlassState.running ? "SWEEPING" : lookingGlassState.completedAt ? "COMPLETE" : "IDLE";
+    if ($("glassStartButton")) $("glassStartButton").disabled = !sourceRunning || sourceType === "replay" || lookingGlassState.running;
+    if ($("glassStopButton")) $("glassStopButton").disabled = !lookingGlassState.running;
+    if ($("glassStatus")) { $("glassStatus").className=`notice-box ${lookingGlassState.error?'error':lookingGlassState.completedAt?'success':''}`; $("glassStatus").innerHTML = `<strong>${lookingGlassState.error ? 'Sweep error' : lookingGlassState.running ? `Sweeping ${formatFrequency(lookingGlassState.currentHz || 0,4)}` : lookingGlassState.completedAt ? 'Sweep complete' : 'Ready to sweep'}</strong><p>${snap ? `${snap.slices} spectral slices stitched · ${formatFrequency(snap.startHz,3)} to ${formatFrequency(snap.endHz,3)}` : 'The receiver will retune serially and retain the maximum observed power in each display bin.'}</p>`; }
+    drawLookingGlass($("lookingGlassCanvas"), snap);
+  } else if (analysisTool === "signalhunter") {
+    if ($("hunterStatus")) { $("hunterStatus").className=`notice-box ${signalHunterState.capturing?'success':signalHunterState.armed?'warning':''}`; $("hunterStatus").innerHTML=`<strong>${signalHunterState.capturing?'CAPTURING TRIGGER':signalHunterState.armed?'ARMED':'DISARMED'}</strong><p>${signalHunterState.error || (Number.isFinite(level)?`${level.toFixed(1)} dBFS · trigger ${settings.hunterThresholdDbfs} dBFS`:'Waiting for receive level')}</p>`; }
+    if ($("hunterTriggers")) $("hunterTriggers").textContent=String(signalHunterState.triggerCount);
+    if ($("hunterFrequency")) $("hunterFrequency").textContent=Number.isFinite(signalHunterState.currentHz)?formatFrequency(signalHunterState.currentHz,4):formatFrequency(effectiveActual().frequencyHz,4);
+    if ($("hunterLatest")) $("hunterLatest").textContent=signalHunterState.lastCapture?.name || '—';
+  } else if (analysisTool === "timesink") {
+    if (latestTimeSeries) timeSinkView?.update(latestTimeSeries);
+    if ($("timeSinkMeta") && latestTimeSeries) { const windowMs = Number(latestTimeSeries.sourceSamples) / Number(latestTimeSeries.sampleRate) * 1000; $("timeSinkMeta").className='notice-box success'; $("timeSinkMeta").innerHTML=`<strong>${latestTimeSeries.i.length} displayed points</strong><p>${windowMs.toFixed(2)} ms source window · ${formatRate(latestTimeSeries.sampleRate)} · I = lime, Q = cyan</p>`; }
+  }
+}
+
+async function startLookingGlassSweep() {
+  if (!sourceRunning || sourceType === "replay") return;
+  const startHz = Math.round(Number($("glassStart").value) * 1e6);
+  const endHz = Math.round(Number($("glassEnd").value) * 1e6);
+  if (!Number.isFinite(startHz) || !Number.isFinite(endHz) || endHz <= startHz) return presentError("Looking Glass range is invalid", new Error("End frequency must be above start frequency."), { receivingStopped: false });
+  const requestedStep = Math.round(Number($("glassStep").value) * 1e6);
+  const dwellMs = Math.max(20, Math.min(5000, Math.round(Number($("glassDwell").value) || 120)));
+  const sampleRate = Number(effectiveActual().sampleRate);
+  const stepHz = Math.max(10_000, Math.min(requestedStep, sampleRate * 0.8));
+  projectStore.update((project) => { project.settings.lookingGlassStartHz=startHz; project.settings.lookingGlassEndHz=endHz; project.settings.lookingGlassStepHz=requestedStep; project.settings.lookingGlassDwellMs=dwellMs; });
+  stopLookingGlassSweep({ restore: false });
+  const token = ++lookingGlassState.token;
+  lookingGlassState = { running:true, token, accumulator:new WidebandSweepAccumulator({startHz,endHz,bins:720}), currentHz:startHz, completedAt:null, originalHz:Number(effectiveActual().frequencyHz), error:null };
+  renderSignalAnalysisLive();
+  try {
+    for (let frequency = startHz; frequency <= endHz + stepHz * 0.2; frequency += stepHz) {
+      if (token !== lookingGlassState.token) break;
+      const requested = Math.min(frequency, endHz);
+      lookingGlassState.currentHz = requested;
+      const actual = await tuneTo(requested);
+      if (actual == null || token !== lookingGlassState.token) break;
+      await new Promise((resolve) => setTimeout(resolve, dwellMs));
+      const detail = await waitForSpectrumAt(actual, token);
+      if (token !== lookingGlassState.token) break;
+      lookingGlassState.accumulator.addSpectrum(detail);
+      renderSignalAnalysisLive();
+      if (requested >= endHz) break;
+    }
+    if (token === lookingGlassState.token) { lookingGlassState.running=false; lookingGlassState.completedAt=new Date().toISOString(); }
+  } catch (error) {
+    if (token === lookingGlassState.token) { lookingGlassState.running=false; lookingGlassState.error=error.message; log.warn("Looking Glass sweep stopped", {message:error.message}); }
+  } finally {
+    if (token === lookingGlassState.token && Number.isFinite(lookingGlassState.originalHz)) await tuneTo(lookingGlassState.originalHz);
+    renderSignalAnalysisLive();
+  }
+}
+
+function stopLookingGlassSweep({ restore = false } = {}) {
+  const original = lookingGlassState.originalHz;
+  lookingGlassState.running = false;
+  lookingGlassState.token += 1;
+  const waiters = spectrumWaiters; spectrumWaiters=[];
+  for (const waiter of waiters) { clearTimeout(waiter.timeout); waiter.reject(new Error("Sweep cancelled.")); }
+  if (restore && Number.isFinite(original) && sourceType !== "replay") tuneTo(original).catch(()=>undefined);
+  renderSignalAnalysisLive();
+}
+
+async function runSignalHunterHop(token) {
+  let current = null;
+  while (signalHunterState.armed && sourceRunning && token === signalHunterState.hopToken) {
+    const settings = currentSettings();
+    if ((settings.hunterMode || "single") !== "range") break;
+
+    const startHz = Math.round(Number(settings.hunterStartHz));
+    const endHz = Math.round(Number(settings.hunterEndHz));
+    const stepHz = Math.max(100, Math.round(Number(settings.hunterStepHz) || 25_000));
+    const dwellMs = Math.max(20, Math.round(Number(settings.hunterDwellMs) || 180));
+    if (!Number.isFinite(startHz) || !Number.isFinite(endHz) || endHz < startHz) {
+      signalHunterState.error = "Signal Hunter range is invalid.";
+      break;
+    }
+
+    if (signalHunterState.capturing) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(100, dwellMs)));
+      continue;
+    }
+
+    current = nextRangeFrequency(current, { startHz, endHz, stepHz });
+    if (!Number.isFinite(current)) {
+      signalHunterState.error = "Signal Hunter could not calculate the next hunt frequency.";
+      break;
+    }
+
+    try {
+      const actual = await tuneTo(current);
+      if (token !== signalHunterState.hopToken || !signalHunterState.armed) break;
+      if (!Number.isFinite(Number(actual))) {
+        signalHunterState.error = `Signal Hunter could not tune ${formatFrequency(current, 4)}.`;
+        break;
+      }
+      signalHunterState.currentHz = Number(actual);
+      renderSignalAnalysisLive();
+      await new Promise((resolve) => setTimeout(resolve, dwellMs));
+    } catch (error) {
+      if (token === signalHunterState.hopToken) signalHunterState.error = error.message;
+      break;
+    }
+  }
+
+  if (token === signalHunterState.hopToken && signalHunterState.armed && !sourceRunning) {
+    signalHunterState.armed = false;
+    signalHunterState.above = false;
+    signalHunterState.error = "Signal Hunter stopped because the receive source stopped.";
+  }
+  renderSignalAnalysisLive();
+}
+
+function armSignalHunter() {
+  if (!sourceRunning || !captureStore || sourceType === "replay") return;
+  const settings = currentSettings();
+  signalHunterState.armed = true;
+  signalHunterState.above = false;
+  signalHunterState.error = null;
+  signalHunterState.hopToken += 1;
+  signalHunterState.currentHz = Number(effectiveActual().frequencyHz) || null;
+  log.info("Signal Hunter armed", {
+    mode: settings.hunterMode || "single",
+    thresholdDbfs: settings.hunterThresholdDbfs,
+    captureSeconds: settings.hunterCaptureSeconds,
+    startHz: settings.hunterStartHz,
+    endHz: settings.hunterEndHz,
+    stepHz: settings.hunterStepHz,
+    dwellMs: settings.hunterDwellMs
+  });
+  if ((settings.hunterMode || "single") === "range") {
+    const token = signalHunterState.hopToken;
+    runSignalHunterHop(token).catch((error) => {
+      if (token !== signalHunterState.hopToken) return;
+      signalHunterState.error = error.message;
+      signalHunterState.armed = false;
+      renderSignalAnalysisLive();
+    });
+  }
+}
+
+function disarmSignalHunter() {
+  signalHunterState.armed = false;
+  signalHunterState.above = false;
+  signalHunterState.hopToken += 1;
+  signalHunterState.currentHz = Number(effectiveActual().frequencyHz) || null;
+  log.info("Signal Hunter disarmed");
+}
+
+async function triggerSignalHunter(levelDbfs) {
+  const now=Date.now(); const settings=currentSettings();
+  if (!signalHunterState.armed || signalHunterState.capturing || now-signalHunterState.lastTriggerAt < Number(settings.hunterCooldownMs||0)) return;
+  if (captureStore?.activeStatus) { signalHunterState.error="Another capture is already active."; return; }
+  signalHunterState.capturing=true; signalHunterState.lastTriggerAt=now; signalHunterState.triggerCount+=1; signalHunterState.error=null;
+  const frequency=Number(effectiveActual().frequencyHz);
+  const name=`hunter-${(frequency/1e6).toFixed(6)}MHz-${new Date(now).toISOString().replaceAll(':','-')}`;
+  const started = await startCapture({ name, notes: `Signal Hunter auto-trigger at ${Number(levelDbfs).toFixed(1)} dBFS; threshold ${settings.hunterThresholdDbfs} dBFS. Post-trigger capture.`, silent:true });
+  if (!started) { signalHunterState.capturing=false; return; }
+  clearTimeout(signalHunterState.timer);
+  signalHunterState.timer=setTimeout(async()=>{
+    try { signalHunterState.lastCapture = await stopCapture("complete", {silent:true}); }
+    catch(error){ signalHunterState.error=error.message; }
+    finally { signalHunterState.capturing=false; renderSignalAnalysisLive(); }
+  }, Math.max(1,Number(settings.hunterCaptureSeconds||5))*1000);
+  renderSignalAnalysisLive();
+}
+
+
+function pocsagFilterMatches(page) {
+  const settings = currentSettings();
+  const address = Math.max(0, Math.round(Number(settings.pocsagFilterAddress) || 0));
+  if (settings.pocsagFilterMode === "keep") return Number(page.ric) === address;
+  if (settings.pocsagFilterMode === "drop") return Number(page.ric) !== address;
+  return true;
+}
+
+function handlePocsagPage(page) {
+  if (!page || !Number.isFinite(Number(page.ric))) return;
+  const entry = { ...page, id: makeId("pocsag"), receivedAtMs: Number(page.receivedAtMs) || Date.now() };
+  pocsagMessages.unshift(entry);
+  pocsagMessages = pocsagMessages.slice(0, 500);
+  if (page.decoderStats) pocsagStats = { ...pocsagStats, ...page.decoderStats };
+  log.info("POCSAG page decoded", { ric: entry.ric, function: entry.function, bitrate: entry.bitrate, type: entry.type, correctedBits: entry.correctedBits, uncorrectableCodewords: entry.uncorrectableCodewords });
+  if (currentView === "pocsag") renderPocsagResults();
+}
+
+function handlePocsagStatus(status) {
+  if (!status || typeof status !== "object") return;
+  pocsagStats = { ...pocsagStats, ...status };
+  if (currentView === "pocsag") renderPocsagResults();
+}
+
+function digitalFrequencyKey(tool = digitalTool) {
+  return `${tool}FrequencyHz`;
+}
+
+function digitalMonitorKey(tool = digitalTool) {
+  return `${tool}MonitorAudio`;
+}
+
+function digitalChannelFrequency(tool = digitalTool) {
+  const key = digitalFrequencyKey(tool);
+  return Math.max(0, Math.round(Number(currentSettings()[key] ?? DEFAULT_SETTINGS[key] ?? effectiveActual().frequencyHz) || 0));
+}
+
+function digitalHardwareFrequency(tool = digitalTool) {
+  const channel = digitalChannelFrequency(tool);
+  if (tool === "acars") return channel + Math.abs(Number(currentSettings().acarsIfOffsetHz ?? 12_000));
+  if (tool === "morse") return channel + Math.abs(MORSE_IF_OFFSET_HZ);
+  return channel;
+}
+
+function digitalMonitorModulation(tool = digitalTool) {
+  if (tool === "acars") return "am";
+  if (tool === "rtty") return currentSettings().rttySideband === "lsb" ? "lsb" : "usb";
+  if (tool === "morse") return "cw";
+  return "nfm";
+}
+
+function digitalPathFor(tool = digitalTool) {
+  if (!["rtty", "morse"].includes(tool)) return { directSampling: "off", directSamplingRequired: false, blocked: false, reason: "This VHF/UHF decoder uses the receiver's normal tuner path." };
+  return amateurFrequencyPath(digitalChannelFrequency(tool), amateurCaps());
+}
+
+function clearDigitalResults(tool = digitalTool) {
+  if (tool === "aprs" || tool === "acars") digitalResults[tool] = { frames: [] };
+  else digitalResults[tool] = { text: "", events: [] };
+  digitalStatus[tool] = {};
+}
+
+function handleDigitalEvent(detail) {
+  const mode = detail?.mode;
+  const event = detail?.event;
+  if (!DIGITAL_APPS.includes(mode) || !event) return;
+  if (mode === "aprs" || mode === "acars") {
+    const frames = digitalResults[mode]?.frames ?? [];
+    frames.unshift(event);
+    digitalResults[mode] = { frames: frames.slice(0, 250) };
+  } else if (event.type === "text") {
+    const state = digitalResults[mode] ?? { text: "", events: [] };
+    state.text = (state.text + String(event.text ?? "")).slice(-16_000);
+    state.events.push(event);
+    if (state.events.length > 500) state.events.splice(0, state.events.length - 500);
+    digitalResults[mode] = state;
+  }
+  if (currentView === "digital" && digitalTool === mode) renderDigitalResults();
+}
+
+function handleDigitalStatus(detail) {
+  const mode = detail?.mode;
+  if (!DIGITAL_APPS.includes(mode)) return;
+  digitalStatus[mode] = { ...(digitalStatus[mode] || {}), ...(detail.status || {}) };
+  if (currentView === "digital" && digitalTool === mode) renderDigitalResults();
+}
+
+async function prepareDigitalReceiver(tool = digitalTool, { restart = true } = {}) {
+  if (!DIGITAL_APPS.includes(tool)) return false;
+  digitalTool = tool;
+  activeApplicationId = tool;
+  const settings = currentSettings();
+  const path = digitalPathFor(tool);
+  if (path.blocked) {
+    showMessage({ eyebrow: "DIGITAL DECODER", title: "Selected frequency is unavailable on this receiver", body: path.reason });
+    return false;
+  }
+  const desiredRate = 1_024_000;
+  const wasRunning = sourceRunning;
+  const desiredDirectSampling = path.directSampling ?? "off";
+  const pathChange = sourceType === "live" && radio.device && settings.directSampling !== desiredDirectSampling;
+  const rateChange = sourceType === "live" && radio.device && Number(effectiveActual().sampleRate) !== desiredRate;
+  if (wasRunning && (pathChange || rateChange)) await stopSource("Changing digital decoder input configuration");
+  if (pathChange) await updateSetting("directSampling", desiredDirectSampling);
+  else projectStore.update((project) => { project.settings.directSampling = desiredDirectSampling; });
+  if (Number(effectiveActual().sampleRate) !== desiredRate) await updateSetting("sampleRate", desiredRate);
+  projectStore.update((project) => {
+    project.settings.digitalTool = tool;
+    project.settings.modulation = digitalMonitorModulation(tool);
+    project.settings.squelchDb = -140;
+    if (["afsk", "aprs"].includes(tool)) project.settings.audioBandwidthHz = 5000;
+    else if (tool === "acars") project.settings.audioBandwidthHz = 5000;
+    else if (tool === "rtty") { project.settings.audioBandwidthHz = 3000; project.settings.ssbLowCutHz = 100; }
+    else { project.settings.audioBandwidthHz = 500; project.settings.cwPitchHz = project.settings.morsePitchHz; }
+  });
+  const actual = await tuneTo(digitalHardwareFrequency(tool));
+  activeApplicationId = tool;
+  syncAudioProcessing({ resetAudio: true, resetDecoder: true });
+  if (wasRunning && !sourceRunning && restart) await startSource();
+  if (currentView === "digital") renderDigitalDecoders();
+  return actual != null;
+}
+
+async function setDigitalFrequency(tool, frequencyHz) {
+  const value = Math.max(0, Math.round(Number(frequencyHz) || 0));
+  projectStore.update((project) => { project.settings[digitalFrequencyKey(tool)] = value; });
+  return prepareDigitalReceiver(tool, { restart: true });
+}
+
+async function toggleDigitalMonitor(tool = digitalTool) {
+  const key = digitalMonitorKey(tool);
+  const next = !Boolean(currentSettings()[key]);
+  projectStore.update((project) => {
+    project.settings[key] = next;
+    project.settings.modulation = digitalMonitorModulation(tool);
+    project.settings.squelchDb = -140;
+    if (tool === "morse") project.settings.cwPitchHz = project.settings.morsePitchHz;
+  });
+  activeApplicationId = tool;
+  if (next) {
+    if (!audio.enabled) await enableAudio();
+    else syncAudioProcessing({ resetAudio: true });
+  } else if (audio.enabled) disableAudio();
+  else syncAudioProcessing({ resetAudio: true });
+  if (currentView === "digital") renderDigitalDecoders();
+}
+
+async function startDigitalSimulation(tool = digitalTool) {
+  try {
+    await stopAndReleaseCurrentSource();
+    clearDigitalResults(tool);
+    digitalTool = tool;
+    activeApplicationId = tool;
+    sourceType = "simulation";
+    sourceRunning = false;
+    sourceStats = createSourceStats();
+    const sampleRate = ["rtty", "morse"].includes(tool) ? 256_000 : 1_024_000;
+    const channel = digitalChannelFrequency(tool);
+    const hardware = tool === "acars" ? channel + Math.abs(Number(currentSettings().acarsIfOffsetHz ?? 12_000)) : tool === "morse" ? channel + Math.abs(MORSE_IF_OFFSET_HZ) : channel;
+    projectStore.update((project) => {
+      project.settings.digitalTool = tool;
+      project.settings.centerFrequencyHz = hardware;
+      project.settings.sampleRate = sampleRate;
+      project.settings.modulation = digitalMonitorModulation(tool);
+      project.settings.squelchDb = -140;
+      project.settings[digitalMonitorKey(tool)] = false;
+    });
+    simulation.configure({ sampleRate, centerFrequencyHz: hardware, blockSamples: currentSettings().usbBlockSamples, scenario: tool });
+    processing?.reset();
+    stateMachine.force(ConnectionState.SIMULATION, `Explicit ${DIGITAL_LABELS[tool]} fixture selected`);
+    syncAudioProcessing({ resetAudio: true, resetDecoder: true });
+    navigate("digital");
+    await startSource();
+    renderDigitalDecoders();
+  } catch (error) { presentError(`${DIGITAL_LABELS[tool]} simulation could not start`, error); }
+}
+
+function exportDigitalJson() {
+  const tool = digitalTool;
+  const payload = {
+    application: APP_NAME,
+    version: APP_VERSION,
+    upstreamCommit: UPSTREAM_COMMIT,
+    generatedAt: new Date().toISOString(),
+    decoder: tool,
+    channelFrequencyHz: digitalChannelFrequency(tool),
+    hardwareCenterFrequencyHz: effectiveActual().frequencyHz,
+    sampleRate: effectiveActual().sampleRate,
+    settings: Object.fromEntries(Object.entries(currentSettings()).filter(([key]) => key.startsWith(tool) || ["digitalTool", "directSampling"].includes(key))),
+    status: digitalStatus[tool],
+    results: digitalResults[tool]
+  };
+  downloadBlob(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }), `mayhem-rtl-${tool}-${Date.now()}.json`);
+}
+
+function exportDigitalCsv() {
+  const tool = digitalTool;
+  let rows;
+  if (tool === "aprs") {
+    rows = [["timestamp", "source", "destination", "path", "info", "latitude", "longitude", "crc_ok"]];
+    for (const frame of digitalResults.aprs.frames) rows.push([new Date(frame.receivedAt).toISOString(), frame.source, frame.destination, (frame.path || []).join(","), frame.info, frame.latitude ?? "", frame.longitude ?? "", frame.crcOk]);
+  } else if (tool === "acars") {
+    rows = [["timestamp", "registration", "label", "block_id", "message_number", "flight_id", "message", "parity_errors", "crc_ok"]];
+    for (const frame of digitalResults.acars.frames) rows.push([new Date(frame.receivedAt).toISOString(), frame.registration, frame.label, frame.blockId, frame.messageNumber, frame.flightId, frame.text, frame.parityErrors, frame.crcOk]);
+  } else {
+    rows = [["decoder", "text"], [tool, digitalResults[tool]?.text ?? ""]];
+  }
+  downloadBlob(new Blob([rows.map((row) => row.map(escapeCsv).join(",")).join("\n")], { type: "text/csv" }), `mayhem-rtl-${tool}-${Date.now()}.csv`);
+}
+
+function digitalToolSettingsHtml(tool) {
+  const settings = currentSettings();
+  if (tool === "afsk") {
+    return `<div class="grid three compact-grid"><div class="form-row"><label for="afskProfile">Modem profile</label><select id="afskProfile">${Object.values(AFSK_MODEM_PRESETS).map((preset) => `<option value="${preset.id}">${preset.name} · ${preset.baud} bit/s · ${preset.markHz}/${preset.spaceHz} Hz</option>`).join("")}</select></div><label class="check-row"><input id="afskReverse" type="checkbox" ${settings.afskReverse ? "checked" : ""}> Reverse mark/space polarity</label><div class="field-help">The terminal uses asynchronous 7 data bits, even parity, one stop bit (7E1), matching the Mayhem Bell/V-series terminal receiver model.</div></div>`;
+  }
+  if (tool === "aprs") return `<div class="grid two compact-grid"><label class="check-row"><input id="aprsReverse" type="checkbox" ${settings.aprsReverse ? "checked" : ""}> Reverse Bell 202 tone polarity</label><div class="field-help">Bell 202 1200 bit/s → NRZI → HDLC bit de-stuffing → AX.25 frame check sequence → APRS fields. Basic uncompressed latitude/longitude is decoded locally.</div></div>`;
+  if (tool === "acars") return `<div class="grid two compact-grid"><div class="form-row"><label for="acarsIfOffset">Intermediate-frequency offset</label><div class="input-group"><input id="acarsIfOffset" type="number" min="2000" max="100000" step="1000" value="${settings.acarsIfOffsetHz}"><span class="unit">Hz</span></div></div><div class="field-help">The hardware tunes above the listed ACARS channel by this amount. The decoder mixes the channel back to baseband so the AM carrier is not erased by the RTL2832U DC blocker.</div></div>`;
+  if (tool === "rtty") return `<div class="grid three compact-grid"><div class="form-row"><label for="rttyProfile">Tone profile</label><select id="rttyProfile">${Object.values(RTTY_PRESETS).map((preset) => `<option value="${preset.id}">${preset.name} · ${preset.markHz}/${preset.spaceHz} Hz</option>`).join("")}</select></div><div class="form-row"><label for="rttySideband">Sideband</label><select id="rttySideband"><option value="usb">USB</option><option value="lsb">LSB</option></select></div><label class="check-row"><input id="rttyReverse" type="checkbox" ${settings.rttyReverse ? "checked" : ""}> Reverse mark/space polarity</label></div>`;
+  return `<div class="grid three compact-grid"><div class="form-row"><label for="morseWpm">Speed</label><div class="input-group"><input id="morseWpm" type="number" min="5" max="60" step="1" value="${settings.morseWpm}"><span class="unit">WPM</span></div></div><div class="form-row"><label for="morsePitch">CW beat pitch</label><div class="input-group"><input id="morsePitch" type="number" min="300" max="1200" step="10" value="${settings.morsePitchHz}"><span class="unit">Hz</span></div></div><div class="form-row"><label for="morseThreshold">Tone threshold</label><input id="morseThreshold" type="range" min="0.005" max="0.2" step="0.005" value="${settings.morseThreshold}"><div class="field-help">${Number(settings.morseThreshold).toFixed(3)}</div></div></div><div class="field-help">Morse reception uses a fixed ${MORSE_IF_OFFSET_HZ / 1000} kHz digital intermediate-frequency offset, then translates the selected carrier back to baseband before CW envelope decoding. This keeps a centered continuous-wave carrier from being removed by the RTL2832U DC correction.</div>`;
+}
+
+
+function handleTelemetryEvent({ mode, event }) {
+  if (!TELEMETRY_APPS.includes(mode) || !event) return;
+  const entry = { ...event, receivedAtMs: Number(event.receivedAtMs) || Date.now(), count: 1 };
+  const list = telemetryResults[mode];
+  const key = `${entry.protocol}:${entry.id}`;
+  const existing = list.find((x) => `${x.protocol}:${x.id}` === key);
+  if (existing) { Object.assign(existing, entry, { count: (existing.count || 1) + 1 }); }
+  else list.unshift(entry);
+  telemetryResults[mode] = list.slice(0, 200);
+  if (currentView === "telemetry" && telemetryTool === mode) renderTelemetryResults();
+}
+function handleTelemetryStatus({ mode, status }) {
+  if (!TELEMETRY_APPS.includes(mode)) return;
+  telemetryStatus[mode] = { ...telemetryStatus[mode], ...status };
+  if (currentView === "telemetry" && telemetryTool === mode) renderTelemetryResults();
+}
+function telemetryFrequency(tool = telemetryTool) { const s=currentSettings(); return tool === "tpms" ? Number(s.tpmsFrequencyHz || 315_000_000) : Number(s.weatherFrequencyHz || 433_920_000); }
+async function prepareTelemetry(tool = telemetryTool, { restart = true } = {}) {
+  telemetryTool = tool; activeApplicationId = tool;
+  const frequency = telemetryFrequency(tool);
+  projectStore.update((project)=>{project.settings.telemetryTool=tool; project.settings.centerFrequencyHz=frequency; project.settings.sampleRate=1_024_000;});
+  if (sourceType === "live" && radio.device) { await radio.setSampleRate(1_024_000); await tuneTo(frequency); }
+  else if (sourceType === "simulation") simulation.configure({ sampleRate: 1_024_000, centerFrequencyHz: frequency });
+  syncAudioProcessing({ resetDecoder: true });
+  if (restart && sourceRunning) { await stopSource("Telemetry receiver reconfigured"); await startSource(); }
+}
+async function startTelemetrySimulation(tool = telemetryTool) {
+  await stopAndReleaseCurrentSource(); telemetryTool=tool; activeApplicationId=tool; sourceType="simulation"; sourceRunning=false; sourceStats=createSourceStats();
+  const frequency=telemetryFrequency(tool); projectStore.update((project)=>{project.settings.telemetryTool=tool;project.settings.centerFrequencyHz=frequency;project.settings.sampleRate=1_024_000;});
+  simulation.configure({ sampleRate:1_024_000, centerFrequencyHz:frequency, blockSamples:currentSettings().usbBlockSamples, scenario:tool });
+  processing?.reset(); stateMachine.force(ConnectionState.SIMULATION,"Telemetry simulation fixture selected"); navigate("telemetry"); await startSource();
+}
+function exportTelemetryJson(){const payload={application:APP_NAME,version:APP_VERSION,tool:telemetryTool,frequencyHz:telemetryFrequency(),status:telemetryStatus[telemetryTool],records:telemetryResults[telemetryTool]};downloadBlob(new Blob([JSON.stringify(payload,null,2)],{type:"application/json"}),`mayhem-rtl-${telemetryTool}-${Date.now()}.json`);}
+function exportTelemetryCsv(){const rows=telemetryResults[telemetryTool];const headers=telemetryTool==="tpms"?["time","protocol","id","pressure_kpa","temperature_c","flags","count"]:["time","protocol","id","temperature_c","humidity","channel","battery_low","count"];const data=rows.map(r=>telemetryTool==="tpms"?[new Date(r.receivedAtMs).toISOString(),r.protocol,r.id,r.pressureKpa??"",r.temperatureC??"",r.flags??"",r.count??1]:[new Date(r.receivedAtMs).toISOString(),r.protocol,r.id,r.temperatureC??"",r.humidity??"",r.channel??"",r.batteryLow??"",r.count??1]);const csv=[headers,...data].map(row=>row.map(escapeCsv).join(",")).join("\n");downloadBlob(new Blob([csv],{type:"text/csv"}),`mayhem-rtl-${telemetryTool}-${Date.now()}.csv`);}
+function renderTelemetry(){telemetryTool=TELEMETRY_APPS.includes(currentSettings().telemetryTool)?currentSettings().telemetryTool:telemetryTool;activeApplicationId=telemetryTool;const s=currentSettings(),freq=telemetryFrequency();const tabs=TELEMETRY_APPS.map(id=>`<button class="analysis-tab ${telemetryTool===id?"active":""}" type="button" data-telemetry-tool="${id}">${TELEMETRY_LABELS[id]}</button>`).join("");staticView(`<section class="view telemetry-view">${pageHeading("SUB-GHZ TELEMETRY", "TPMS & Weather Sensors", "Decode local OOK/FSK telemetry using the shared continuous-IQ pulse and packet engine. Protocols are promoted only when deterministic fixtures exist.", `<button id="telemetrySimulation" class="secondary-button" type="button">Run Simulation Fixture</button><button id="telemetryExportJson" class="secondary-button" type="button">Export JSON</button><button id="telemetryExportCsv" class="secondary-button" type="button">Export CSV</button><button id="telemetryClear" class="secondary-button" type="button">Clear</button>`)}<div class="analysis-tabs">${tabs}</div><article class="card"><div class="card-title-row"><div><span class="eyebrow">${TELEMETRY_LABELS[telemetryTool].toUpperCase()}</span><h2>Receiver configuration</h2></div><span class="badge">RECEIVE ONLY</span></div><div class="grid three compact-grid"><div class="form-row"><label for="telemetryFrequency">Center frequency</label><div class="input-group"><input id="telemetryFrequency" type="number" step="0.000001" value="${(freq/1e6).toFixed(6)}"><span class="unit">MHz</span></div></div><div class="form-row"><label>Protocol coverage</label><div class="read-only-field">${telemetryTool==="tpms"?"Schrader/GMC OOK foundation":"Nexus TH fixture-verified"}</div></div><div class="form-row"><label>Sample rate</label><div class="read-only-field">1.024 Msps</div></div></div>${telemetryTool==="tpms"?`<div class="segmented"><button type="button" data-tpms-band="315" class="${s.tpmsBand==="315"?"active":""}">315 MHz</button><button type="button" data-tpms-band="433" class="${s.tpmsBand==="433"?"active":""}">433.92 MHz</button></div>`:`<div class="field-help">Weather currently promotes Nexus TH at 433.92 MHz on the common pulse-duration protocol interface. Additional upstream weather protocols remain explicitly pending.</div>`}<div class="card-actions"><button id="telemetryTune" class="secondary-button" type="button">Tune / Apply</button><button id="telemetryConnect" class="${sourceType==="none"?"primary-button":"secondary-button"}" type="button">${sourceType==="none"?"Connect RTL-SDR":sourceRunning?"Stop Receiver":"Start Receiver"}</button></div></article><div class="grid four" id="telemetryMetrics"></div><article class="card"><div class="card-title-row"><div><span class="eyebrow">OBSERVATIONS</span><h2>Recent ${TELEMETRY_LABELS[telemetryTool]} records</h2></div><span id="telemetryBadge" class="badge">WAITING</span></div><div id="telemetryResults"></div></article></section>`);
+  document.querySelectorAll("[data-telemetry-tool]").forEach(b=>b.addEventListener("click",()=>{telemetryTool=b.dataset.telemetryTool;projectStore.update(p=>{p.settings.telemetryTool=telemetryTool;});syncAudioProcessing({resetDecoder:true});renderTelemetry();}));
+  document.querySelectorAll("[data-tpms-band]").forEach(b=>b.addEventListener("click",()=>{const band=b.dataset.tpmsBand;const hz=band==="433"?433_920_000:315_000_000;projectStore.update(p=>{p.settings.tpmsBand=band;p.settings.tpmsFrequencyHz=hz;});renderTelemetry();}));
+  $("telemetryTune").addEventListener("click",async()=>{const hz=Number($("telemetryFrequency").value)*1e6;projectStore.update(p=>{if(telemetryTool==="tpms")p.settings.tpmsFrequencyHz=hz;else p.settings.weatherFrequencyHz=hz;});await prepareTelemetry(telemetryTool,{restart:true});renderTelemetry();});
+  $("telemetryConnect").addEventListener("click",async()=>{if(sourceType==="none"){await connectRadio({view:"telemetry",applicationId:telemetryTool});await prepareTelemetry(telemetryTool,{restart:false});}else if(sourceRunning)await stopSource("Telemetry receiver stopped");else{await prepareTelemetry(telemetryTool,{restart:false});await startSource();}if(currentView==="telemetry")renderTelemetry();});
+  $("telemetrySimulation").addEventListener("click",()=>startTelemetrySimulation(telemetryTool));$("telemetryExportJson").addEventListener("click",exportTelemetryJson);$("telemetryExportCsv").addEventListener("click",exportTelemetryCsv);$("telemetryClear").addEventListener("click",()=>{telemetryResults[telemetryTool]=[];syncAudioProcessing({resetDecoder:true});renderTelemetryResults();});renderTelemetryResults();}
+function renderTelemetryResults(){if(currentView!=="telemetry"||!$("telemetryResults"))return;const list=telemetryResults[telemetryTool],st=telemetryStatus[telemetryTool]||{};const m=$("telemetryMetrics");clear(m);m.append(metricCard("Pulse transitions",String(st.transitions??0)),metricCard("Pulses",String(st.pulses??0)),metricCard("Decoded records",String(st.events??list.length)),metricCard("Protocol",telemetryTool==="tpms"?"OOK/FSK core":"Nexus TH"));const badge=$("telemetryBadge");badge.textContent=list.length?`${list.length} SENSOR${list.length===1?"":"S"}`:"WAITING";badge.className=`badge ${list.length?"ready":""}`;const h=$("telemetryResults");clear(h);if(!list.length){h.append(emptyState("No telemetry decoded yet","Use the deterministic Simulation Fixture first, then tune an active local sensor band."));return;}const wrap=node("div",{class:"table-wrap"}),table=node("table");if(telemetryTool==="tpms"){table.append(node("thead",{},node("tr",{},...["Time","Protocol","ID","Pressure","Temp","Flags","Count"].map(text=>node("th",{text})))));const b=node("tbody");for(const r of list)b.append(node("tr",{},node("td",{text:new Date(r.receivedAtMs).toLocaleTimeString()}),node("td",{text:r.protocol}),node("td",{text:r.id}),node("td",{text:r.pressureKpa==null?"—":`${r.pressureKpa} kPa`}),node("td",{text:r.temperatureC==null?"—":`${r.temperatureC.toFixed(1)} °C`}),node("td",{text:r.flags??"—"}),node("td",{text:String(r.count??1)})));table.append(b);}else{table.append(node("thead",{},node("tr",{},...["Time","Protocol","ID","Temp","Humidity","Channel","Battery","Count"].map(text=>node("th",{text})))));const b=node("tbody");for(const r of list)b.append(node("tr",{},node("td",{text:new Date(r.receivedAtMs).toLocaleTimeString()}),node("td",{text:r.protocol}),node("td",{text:r.id}),node("td",{text:r.temperatureC==null?"—":`${r.temperatureC.toFixed(1)} °C`}),node("td",{text:r.humidity==null?"—":`${r.humidity}%`}),node("td",{text:String(r.channel??"—")}),node("td",{text:r.batteryLow?"LOW":"OK"}),node("td",{text:String(r.count??1)})));table.append(b);}wrap.append(table);h.append(wrap);}
+
+
+function pagingFrequency(tool=pagingTool){return Number(tool==="flex"?currentSettings().flexFrequencyHz:currentSettings().twoToneFrequencyHz);}
+function handlePagingEvent(detail){const mode=detail?.mode,event=detail?.event;if(!PAGING_APPS.includes(mode)||!event)return;const list=pagingResults[mode];list.unshift(event);if(list.length>200)list.length=200;if(currentView==="paging"&&pagingTool===mode)renderPagingResults();}
+function handlePagingStatus(detail){const mode=detail?.mode;if(!PAGING_APPS.includes(mode))return;pagingStatus[mode]={...(pagingStatus[mode]||{}),...(detail.status||{})};if(currentView==="paging"&&pagingTool===mode)renderPagingResults();}
+async function preparePaging(tool=pagingTool,{restart=true}={}){pagingTool=tool;activeApplicationId=PAGING_TO_APP[tool];const wasRunning=sourceRunning;if(wasRunning&&restart)await stopSource("Changing paging receiver configuration");const hz=pagingFrequency(tool);projectStore.update(p=>{p.settings.pagingTool=tool;p.settings.centerFrequencyHz=hz;p.settings.sampleRate=1_024_000;p.settings.modulation="nfm";});simulation.configure({sampleRate:1_024_000,centerFrequencyHz:hz,blockSamples:currentSettings().usbBlockSamples});await tuneTo(hz);syncAudioProcessing({resetDecoder:true});if(wasRunning&&restart)await startSource();}
+async function startPagingSimulation(tool=pagingTool){if(sourceRunning)await stopSource("Switching to paging simulation fixture");sourceType="simulation";pagingTool=tool;activeApplicationId=PAGING_TO_APP[tool];const hz=pagingFrequency(tool);projectStore.update(p=>{p.settings.pagingTool=tool;p.settings.centerFrequencyHz=hz;p.settings.sampleRate=1_024_000;});simulation.configure({sampleRate:1_024_000,centerFrequencyHz:hz,blockSamples:currentSettings().usbBlockSamples,scenario:tool});processing?.reset();stateMachine.force(ConnectionState.SIMULATION,"Paging simulation fixture selected");navigate("paging");await startSource();}
+function exportPagingJson(){const payload={application:APP_NAME,version:APP_VERSION,tool:pagingTool,frequencyHz:pagingFrequency(),status:pagingStatus[pagingTool],records:pagingResults[pagingTool]};downloadBlob(new Blob([JSON.stringify(payload,null,2)],{type:"application/json"}),`mayhem-rtl-${pagingTool}-${Date.now()}.json`);}
+function exportPagingCsv(){const rows=pagingResults[pagingTool];let all;if(pagingTool==="flex")all=[["time","capcode","type","message","bitrate","cycle","frame","phase"],...rows.map(r=>[new Date(r.receivedAtMs).toISOString(),r.capcode,r.type,r.message,r.bitrate,r.cycle,r.frame,r.phase])];else all=[["time","tone_a_hz","tone_a_ms","tone_b_hz","tone_b_ms"],...rows.map(r=>[new Date(r.receivedAtMs).toISOString(),r.toneAHz,r.toneADurationMs,r.toneBHz,r.toneBDurationMs])];downloadBlob(new Blob([all.map(row=>row.map(escapeCsv).join(",")).join("\n")],{type:"text/csv"}),`mayhem-rtl-${pagingTool}-${Date.now()}.csv`);}
+function renderPaging(){pagingTool=PAGING_APPS.includes(currentSettings().pagingTool)?currentSettings().pagingTool:pagingTool;activeApplicationId=PAGING_TO_APP[pagingTool];syncAudioProcessing();const hz=pagingFrequency();const tabs=PAGING_APPS.map(id=>`<button class="analysis-tab ${pagingTool===id?"active":""}" type="button" data-paging-tool="${id}">${PAGING_LABELS[id]}</button>`).join("");staticView(`<section class="view paging-view">${pageHeading("PAGING", "FLEX & 2-Tone Receivers", "Receive-only paging analysis using the continuous worker IQ path. Decoded content stays local.", `<button id="pagingSimulation" class="secondary-button" type="button">Run Simulation Fixture</button><button id="pagingExportJson" class="secondary-button" type="button">Export JSON</button><button id="pagingExportCsv" class="secondary-button" type="button">Export CSV</button><button id="pagingClear" class="secondary-button" type="button">Clear</button>`)}<div class="analysis-tabs">${tabs}</div><article class="card"><div class="card-title-row"><div><span class="eyebrow">${PAGING_LABELS[pagingTool].toUpperCase()}</span><h2>Receiver configuration</h2></div><span class="badge">RECEIVE ONLY</span></div><div class="grid three compact-grid"><div class="form-row"><label for="pagingFrequency">Center frequency</label><div class="input-group"><input id="pagingFrequency" type="number" step="0.000001" value="${(hz/1e6).toFixed(6)}"><span class="unit">MHz</span></div></div><div class="form-row"><label>Decode coverage</label><div class="read-only-field">${pagingTool==="flex"?"FLEX 1600 2FSK foundation":"Motorola/EIA QCII tone pairs"}</div></div><div class="form-row"><label>Sample rate</label><div class="read-only-field">1.024 Msps</div></div></div><div class="field-help">${pagingTool==="flex"?"v0.8.8 validates sync, FIW, BCH and Phase-A alphanumeric pages at 1600 bit/s. 3200/6400 and 4FSK remain pending.":"Two-Tone detects the standard Motorola/EIA tone bank in 40 ms windows and reports A/B tone duration pairs; it does not infer agency identity."}</div><div class="card-actions"><button id="pagingTune" class="secondary-button" type="button">Tune / Apply</button><button id="pagingConnect" class="${sourceType==="none"?"primary-button":"secondary-button"}" type="button">${sourceType==="none"?"Connect RTL-SDR":sourceRunning?"Stop Receiver":"Start Receiver"}</button></div></article><div class="grid four" id="pagingMetrics"></div><article class="card"><div class="card-title-row"><div><span class="eyebrow">DECODE OUTPUT</span><h2>Recent ${PAGING_LABELS[pagingTool]} events</h2></div><span id="pagingBadge" class="badge">WAITING</span></div><div id="pagingResults"></div></article></section>`);document.querySelectorAll("[data-paging-tool]").forEach(b=>b.addEventListener("click",()=>{pagingTool=b.dataset.pagingTool;projectStore.update(p=>{p.settings.pagingTool=pagingTool;});syncAudioProcessing({resetDecoder:true});renderPaging();}));$("pagingTune").addEventListener("click",async()=>{const val=Number($("pagingFrequency").value)*1e6;projectStore.update(p=>{if(pagingTool==="flex")p.settings.flexFrequencyHz=val;else p.settings.twoToneFrequencyHz=val;});await preparePaging(pagingTool,{restart:true});renderPaging();});$("pagingConnect").addEventListener("click",async()=>{if(sourceType==="none"){await connectRadio({view:"paging",applicationId:PAGING_TO_APP[pagingTool]});await preparePaging(pagingTool,{restart:false});}else if(sourceRunning)await stopSource("Paging receiver stopped");else{await preparePaging(pagingTool,{restart:false});await startSource();}if(currentView==="paging")renderPaging();});$("pagingSimulation").addEventListener("click",()=>startPagingSimulation(pagingTool));$("pagingExportJson").addEventListener("click",exportPagingJson);$("pagingExportCsv").addEventListener("click",exportPagingCsv);$("pagingClear").addEventListener("click",()=>{pagingResults[pagingTool]=[];syncAudioProcessing({resetDecoder:true});renderPagingResults();});renderPagingResults();}
+function renderPagingResults() {
+  if (currentView !== "paging" || !$("pagingResults")) return;
+  const list = pagingResults[pagingTool];
+  const st = pagingStatus[pagingTool] || {};
+  const metrics = $("pagingMetrics");
+  clear(metrics);
+  metrics.append(
+    metricCard("Events", String(st.events ?? list.length)),
+    metricCard(pagingTool === "flex" ? "Syncs" : "Windows", String(pagingTool === "flex" ? (st.syncs ?? 0) : (st.windows ?? 0))),
+    metricCard("State", String(st.state ?? st.phase ?? "searching")),
+    metricCard("Mode", pagingTool === "flex" ? "1600 2FSK" : "QCII")
+  );
+  const badge = $("pagingBadge");
+  badge.textContent = list.length ? `${list.length} EVENT${list.length === 1 ? "" : "S"}` : "WAITING";
+  badge.className = `badge ${list.length ? "ready" : ""}`;
+  const host = $("pagingResults");
+  clear(host);
+  if (!list.length) { host.append(emptyState("No paging event decoded yet", "Run the deterministic fixture first, then tune a known active paging channel.")); return; }
+  const wrap = node("div", { class: "table-wrap" });
+  const table = node("table");
+  if (pagingTool === "flex") {
+    table.append(node("thead", {}, node("tr", {}, ...["Time", "Capcode", "Type", "Message", "Rate", "Frame"].map((text) => node("th", { text })) )));
+    const body = node("tbody");
+    for (const r of list) body.append(node("tr", {},
+      node("td", { text: new Date(r.receivedAtMs).toLocaleTimeString() }), node("td", { text: String(r.capcode) }),
+      node("td", { text: r.type }), node("td", { text: r.message || "—" }), node("td", { text: `${r.bitrate} bit/s` }),
+      node("td", { text: `${r.cycle}/${r.frame}${r.phase}` })
+    ));
+    table.append(body);
+  } else {
+    table.append(node("thead", {}, node("tr", {}, ...["Time", "Tone A", "A duration", "Tone B", "B duration"].map((text) => node("th", { text })) )));
+    const body = node("tbody");
+    for (const r of list) body.append(node("tr", {},
+      node("td", { text: new Date(r.receivedAtMs).toLocaleTimeString() }), node("td", { text: `${Number(r.toneAHz).toFixed(1)} Hz` }),
+      node("td", { text: `${r.toneADurationMs} ms` }), node("td", { text: `${Number(r.toneBHz).toFixed(1)} Hz` }), node("td", { text: `${r.toneBDurationMs} ms` })
+    ));
+    table.append(body);
+  }
+  wrap.append(table); host.append(wrap);
+}
+
+
+function trackingNominalFrequency(tool = trackingTool) {
+  const settings = currentSettings();
+  if (tool === "ais") return Number(settings.aisCenterFrequencyHz ?? AIS_CENTER_HZ);
+  if (tool === "radiosonde") return Number(settings.radiosondeFrequencyHz ?? 400_500_000);
+  return Number(settings.epirbFrequencyHz ?? 406_037_000);
+}
+
+function trackingHardwareFrequency(tool = trackingTool) {
+  const nominal = trackingNominalFrequency(tool);
+  return tool === "epirb" ? nominal - Math.abs(Number(currentSettings().epirbIfOffsetHz ?? EPIRB_IF_OFFSET_HZ)) : nominal;
+}
+
+function handleTrackingEvent(detail) {
+  const mode = detail?.mode, event = detail?.event;
+  if (!TRACKING_APPS.includes(mode) || !event) return;
+  const list = trackingResults[mode];
+  list.unshift(event);
+  if (list.length > 300) list.length = 300;
+  if (currentView === "tracking" && trackingTool === mode) renderTrackingResults();
+}
+
+function handleTrackingStatus(detail) {
+  const mode = detail?.mode;
+  if (!TRACKING_APPS.includes(mode)) return;
+  trackingStatus[mode] = { ...(trackingStatus[mode] || {}), ...(detail.status || {}) };
+  if (currentView === "tracking" && trackingTool === mode) renderTrackingResults();
+}
+
+async function prepareTracking(tool = trackingTool, { restart = true } = {}) {
+  if (!TRACKING_APPS.includes(tool)) return false;
+  trackingTool = tool;
+  activeApplicationId = TRACKING_TO_APP[tool];
+  const wasRunning = sourceRunning;
+  const desiredRate = 1_024_000;
+  const hardware = trackingHardwareFrequency(tool);
+  if (wasRunning && restart) await stopSource("Changing tracking/beacon receiver configuration");
+  projectStore.update((project) => {
+    project.settings.trackingTool = tool;
+    project.settings.centerFrequencyHz = hardware;
+    project.settings.sampleRate = desiredRate;
+    project.settings.directSampling = "off";
+  });
+  if (sourceType === "live" && radio.device) {
+    if (Number(effectiveActual().sampleRate) !== desiredRate) await updateSetting("sampleRate", desiredRate);
+    await tuneTo(hardware);
+  } else if (sourceType === "simulation") {
+    simulation.configure({ sampleRate: desiredRate, centerFrequencyHz: hardware, blockSamples: currentSettings().usbBlockSamples });
+  }
+  syncAudioProcessing({ resetDecoder: true });
+  if (wasRunning && restart) await startSource();
+  return true;
+}
+
+async function startTrackingSimulation(tool = trackingTool) {
+  try {
+    await stopAndReleaseCurrentSource();
+    trackingTool = tool;
+    trackingResults[tool] = [];
+    trackingStatus[tool] = {};
+    activeApplicationId = TRACKING_TO_APP[tool];
+    sourceType = "simulation";
+    sourceRunning = false;
+    sourceStats = createSourceStats();
+    const hardware = trackingHardwareFrequency(tool);
+    projectStore.update((project) => {
+      project.settings.trackingTool = tool;
+      project.settings.centerFrequencyHz = hardware;
+      project.settings.sampleRate = 1_024_000;
+      project.settings.directSampling = "off";
+    });
+    simulation.configure({ sampleRate: 1_024_000, centerFrequencyHz: hardware, blockSamples: currentSettings().usbBlockSamples, scenario: tool });
+    processing?.reset();
+    stateMachine.force(ConnectionState.SIMULATION, `${TRACKING_LABELS[tool]} deterministic fixture selected`);
+    syncAudioProcessing({ resetDecoder: true });
+    navigate("tracking");
+    await startSource();
+  } catch (error) { presentError(`${TRACKING_LABELS[tool]} simulation could not start`, error); }
+}
+
+function exportTrackingJson() {
+  const payload = {
+    application: APP_NAME, version: APP_VERSION, upstreamCommit: UPSTREAM_COMMIT,
+    generatedAt: new Date().toISOString(), tool: trackingTool,
+    nominalFrequencyHz: trackingNominalFrequency(), hardwareCenterFrequencyHz: trackingHardwareFrequency(),
+    status: trackingStatus[trackingTool], records: trackingResults[trackingTool]
+  };
+  downloadBlob(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }), `mayhem-rtl-${trackingTool}-${Date.now()}.json`);
+}
+
+function exportTrackingCsv() {
+  const rows = trackingResults[trackingTool];
+  let data;
+  if (trackingTool === "ais") data = [["time","channel","channel_hz","mmsi","message_type","latitude","longitude","speed_knots","course_deg","heading_deg"], ...rows.map((r) => [new Date(r.receivedAtMs).toISOString(),r.channel,r.channelFrequencyHz,r.mmsi,r.messageType,r.latitude??"",r.longitude??"",r.speedKnots??"",r.courseDeg??"",r.headingDeg??""])];
+  else if (trackingTool === "radiosonde") data = [["time","protocol","serial","frame","battery_mv","latitude","longitude","altitude_m"], ...rows.map((r) => [new Date(r.receivedAtMs).toISOString(),r.protocol,r.serial,r.frame,r.batteryMv,r.latitude??"",r.longitude??"",r.altitudeM??""])];
+  else data = [["time","type","protocol","country_code","country","serial","latitude","longitude","bch1_valid","bch2_valid"], ...rows.map((r) => [new Date(r.receivedAtMs).toISOString(),r.type,r.protocol,r.countryCode,r.country,r.serialNumber??"",r.latitude??"",r.longitude??"",r.bch1Valid,r.bch2Valid])];
+  const csv = data.map((row) => row.map(escapeCsv).join(",")).join("\n");
+  downloadBlob(new Blob([csv], { type: "text/csv" }), `mayhem-rtl-${trackingTool}-${Date.now()}.csv`);
+}
+
+function trackingCoverageText(tool = trackingTool) {
+  if (tool === "ais") return "AIS A/B · 9600 bit/s · Class-A position reports";
+  if (tool === "radiosonde") return "Vaisala RS41-SG · 4800 bit/s 2FSK";
+  return "406 MHz long frame · biphase-L · Standard Location PLB fixture";
+}
+
+function trackingHelpText(tool = trackingTool) {
+  if (tool === "ais") return "The receiver centers at 162.000 MHz and digitally channelizes both AIS A (161.975 MHz) and AIS B (162.025 MHz). v0.8.9 promotes message types 1/2/3 position reports; broader message parsing remains incremental.";
+  if (tool === "radiosonde") return "v0.8.9 promotes only the fixture-backed Vaisala RS41-SG path: 4800 bit/s 2FSK, XOR descrambling, status/GPS CRC validation, serial, battery, and position. Meteomodem and other sonde families remain pending.";
+  return `The nominal 406 MHz beacon frequency is protected from the RTL2832U center-frequency/DC notch by tuning the hardware ${Math.abs(Number(currentSettings().epirbIfOffsetHz ?? EPIRB_IF_OFFSET_HZ))/1000} kHz below the selected channel and digitally translating it back. This is passive reception only; it does not replace emergency services or certified beacon test equipment.`;
+}
+
+function renderTracking() {
+  trackingTool = TRACKING_APPS.includes(currentSettings().trackingTool) ? currentSettings().trackingTool : trackingTool;
+  activeApplicationId = TRACKING_TO_APP[trackingTool];
+  syncAudioProcessing();
+  const nominal = trackingNominalFrequency();
+  const tabs = TRACKING_APPS.map((id) => `<button class="analysis-tab ${trackingTool===id?"active":""}" type="button" data-tracking-tool="${id}">${TRACKING_LABELS[id]}</button>`).join("");
+  const freqLabel = trackingTool === "ais" ? "Dual-channel center" : trackingTool === "epirb" ? "Nominal beacon frequency" : "Radiosonde frequency";
+  staticView(`<section class="view tracking-view">${pageHeading("TRACKING & BEACONS", "Marine, Radiosonde & 406 MHz Receivers", "Receive-only structured telemetry from three fixture-backed signal families. All decoded data remains local to this browser.", `<button id="trackingSimulation" class="secondary-button" type="button">Run Simulation Fixture</button><button id="trackingExportJson" class="secondary-button" type="button">Export JSON</button><button id="trackingExportCsv" class="secondary-button" type="button">Export CSV</button><button id="trackingClear" class="secondary-button" type="button">Clear</button>`)}<div class="analysis-tabs">${tabs}</div><article class="card"><div class="card-title-row"><div><span class="eyebrow">${TRACKING_LABELS[trackingTool].toUpperCase()}</span><h2>Receiver configuration</h2></div><span class="badge">RECEIVE ONLY</span></div><div class="grid three compact-grid"><div class="form-row"><label for="trackingFrequency">${freqLabel}</label><div class="input-group"><input id="trackingFrequency" type="number" min="0" step="0.000001" value="${(nominal/1e6).toFixed(6)}" ${trackingTool==="ais"?"readonly":""}><span class="unit">MHz</span></div></div><div class="form-row"><label>Decode coverage</label><div class="read-only-field">${trackingCoverageText()}</div></div><div class="form-row"><label>Sample rate</label><div class="read-only-field">1.024 Msps</div></div></div><div class="field-help">${trackingHelpText()}</div><div class="card-actions"><button id="trackingTune" class="secondary-button" type="button">Tune / Apply</button><button id="trackingConnect" class="${sourceType==="none"?"primary-button":"secondary-button"}" type="button">${sourceType==="none"?"Connect RTL-SDR":sourceRunning?"Stop Receiver":"Start Receiver"}</button></div></article><div class="grid four" id="trackingMetrics"></div><article class="card"><div class="card-title-row"><div><span class="eyebrow">DECODE OUTPUT</span><h2>Recent ${TRACKING_LABELS[trackingTool]} records</h2></div><span id="trackingBadge" class="badge">WAITING</span></div><div id="trackingResults"></div></article></section>`);
+  document.querySelectorAll("[data-tracking-tool]").forEach((button) => button.addEventListener("click", () => { trackingTool = button.dataset.trackingTool; projectStore.update((p) => { p.settings.trackingTool = trackingTool; }); syncAudioProcessing({ resetDecoder: true }); renderTracking(); }));
+  $("trackingTune").addEventListener("click", async () => {
+    if (trackingTool !== "ais") {
+      const value = Math.max(0, Math.round(Number($("trackingFrequency").value) * 1e6));
+      projectStore.update((p) => { if (trackingTool === "radiosonde") p.settings.radiosondeFrequencyHz = value; else p.settings.epirbFrequencyHz = value; });
+    }
+    await prepareTracking(trackingTool, { restart: true }); renderTracking();
+  });
+  $("trackingConnect").addEventListener("click", async () => {
+    if (sourceType === "none") { await connectRadio({ view: "tracking", applicationId: TRACKING_TO_APP[trackingTool] }); await prepareTracking(trackingTool, { restart: false }); }
+    else if (sourceRunning) await stopSource("Tracking/beacon receiver stopped");
+    else { await prepareTracking(trackingTool, { restart: false }); await startSource(); }
+    if (currentView === "tracking") renderTracking();
+  });
+  $("trackingSimulation").addEventListener("click", () => startTrackingSimulation(trackingTool));
+  $("trackingExportJson").addEventListener("click", exportTrackingJson);
+  $("trackingExportCsv").addEventListener("click", exportTrackingCsv);
+  $("trackingClear").addEventListener("click", () => { trackingResults[trackingTool] = []; trackingStatus[trackingTool] = {}; syncAudioProcessing({ resetDecoder: true }); renderTrackingResults(); });
+  renderTrackingResults();
+}
+
+function renderTrackingResults() {
+  if (currentView !== "tracking" || !$("trackingResults")) return;
+  const rows = trackingResults[trackingTool], st = trackingStatus[trackingTool] || {};
+  const metrics = $("trackingMetrics"); clear(metrics);
+  if (trackingTool === "ais") {
+    const a = st.channels?.A ?? {}, b = st.channels?.B ?? {};
+    metrics.append(metricCard("Frames", String(st.frames ?? rows.length)), metricCard("AIS A", `${a.frames??0} frame(s)`), metricCard("AIS B", `${b.frames??0} frame(s)`), metricCard("CRC errors", String(st.crcErrors ?? 0)));
+  } else if (trackingTool === "radiosonde") {
+    metrics.append(metricCard("Frames", String(st.frames ?? rows.length)), metricCard("Syncs", String(st.syncs ?? 0)), metricCard("CRC errors", String(st.crcErrors ?? 0)), metricCard("Protocol", "RS41-SG"));
+  } else {
+    metrics.append(metricCard("Frames", String(st.frames ?? rows.length)), metricCard("Syncs", String(st.syncs ?? 0)), metricCard("BCH errors", String(st.bchErrors ?? 0)), metricCard("State", String(st.state ?? "carrier-search")));
+  }
+  const badge = $("trackingBadge"); badge.textContent = rows.length ? `${rows.length} RECORD${rows.length===1?"":"S"}` : "WAITING"; badge.className = `badge ${rows.length?"ready":""}`;
+  const host = $("trackingResults"); clear(host);
+  if (!rows.length) { host.append(emptyState(`No ${TRACKING_LABELS[trackingTool]} record decoded yet`, "Run the deterministic fixture first, then use a suitable antenna and active local signal.")); return; }
+  const wrap = node("div", { class: "table-wrap" }), table = node("table"), body = node("tbody");
+  if (trackingTool === "ais") {
+    table.append(node("thead", {}, node("tr", {}, ...["Time","Ch","MMSI","Type","Position","Speed","Course"].map((text) => node("th", { text })) )));
+    for (const r of rows) body.append(node("tr", {}, node("td", { text: new Date(r.receivedAtMs).toLocaleTimeString() }), node("td", { text: r.channel }), node("td", { text: r.mmsi }), node("td", { text: String(r.messageType) }), node("td", { text: r.latitude==null||r.longitude==null?"—":`${r.latitude.toFixed(5)}, ${r.longitude.toFixed(5)}` }), node("td", { text: r.speedKnots==null?"—":`${r.speedKnots.toFixed(1)} kt` }), node("td", { text: r.courseDeg==null?"—":`${r.courseDeg.toFixed(1)}°` })));
+  } else if (trackingTool === "radiosonde") {
+    table.append(node("thead", {}, node("tr", {}, ...["Time","Serial","Frame","Battery","Position","Altitude","CRC"].map((text) => node("th", { text })) )));
+    for (const r of rows) body.append(node("tr", {}, node("td", { text: new Date(r.receivedAtMs).toLocaleTimeString() }), node("td", { text: r.serial||"—" }), node("td", { text: String(r.frame??"—") }), node("td", { text: r.batteryMv?`${(r.batteryMv/1000).toFixed(1)} V`:"—" }), node("td", { text: r.latitude==null||r.longitude==null?"—":`${r.latitude.toFixed(5)}, ${r.longitude.toFixed(5)}` }), node("td", { text: r.altitudeM==null?"—":`${r.altitudeM.toFixed(0)} m` }), node("td", { text: Object.values(r.crcStatus||{}).every(Boolean)?"OK":"CHECK" })));
+  } else {
+    table.append(node("thead", {}, node("tr", {}, ...["Time","Type","Country","Serial","Position","BCH-1","BCH-2"].map((text) => node("th", { text })) )));
+    for (const r of rows) body.append(node("tr", {}, node("td", { text: new Date(r.receivedAtMs).toLocaleTimeString() }), node("td", { text: r.type }), node("td", { text: `${r.country} (${r.countryCode})` }), node("td", { text: String(r.serialNumber??"—") }), node("td", { text: r.latitude==null||r.longitude==null?"—":`${r.latitude.toFixed(5)}, ${r.longitude.toFixed(5)}` }), node("td", { text: r.bch1Valid?"OK":"FAIL" }), node("td", { text: r.bch2Valid?"OK":"FAIL" })));
+  }
+  table.append(body); wrap.append(table); host.append(wrap);
+}
+
+function renderDigitalDecoders() {
+  digitalTool = DIGITAL_APPS.includes(currentSettings().digitalTool) ? currentSettings().digitalTool : digitalTool;
+  activeApplicationId = digitalTool;
+  syncAudioProcessing();
+  const settings = currentSettings();
+  const channel = digitalChannelFrequency(digitalTool);
+  const monitor = Boolean(settings[digitalMonitorKey(digitalTool)] && audio.enabled);
+  const path = digitalPathFor(digitalTool);
+  const tabs = DIGITAL_APPS.map((id) => `<button class="analysis-tab ${digitalTool === id ? "active" : ""}" type="button" data-digital-tool="${id}">${DIGITAL_LABELS[id]}</button>`).join("");
+  staticView(`<section class="view digital-view">
+    ${pageHeading("DIGITAL DECODERS", "AFSK, APRS, ACARS, RTTY, and Morse", "Continuous worker-side IQ decoding with optional audio monitoring. Decoder output remains local and does not depend on the speaker path.", `<button id="digitalExportJson" class="secondary-button" type="button">Export JSON</button><button id="digitalExportCsv" class="secondary-button" type="button">Export CSV</button><button id="digitalClear" class="secondary-button" type="button">Clear</button>`)}
+    <div class="analysis-tabs" role="tablist">${tabs}</div>
+    <article class="card analysis-source-card"><div><span class="eyebrow">SOURCE</span><h2>${sourceType === "none" ? "No sample source" : selectedSourceLabel()}</h2><p>${sourceRunning ? `Receiving ${formatRate(effectiveActual().sampleRate)} at hardware center ${formatFrequency(effectiveActual().frequencyHz, 5)}.` : sourceType === "none" ? "Connect an RTL-SDR or run the deterministic fixture." : "Source selected; receiver stopped."}</p></div><span class="badge ${sourceRunning ? "ready" : ""}">${sourceRunning ? "STREAMING" : sourceType === "none" ? "IDLE" : "STOPPED"}</span></article>
+    <article class="card"><div class="card-title-row"><div><span class="eyebrow">${DIGITAL_LABELS[digitalTool].toUpperCase()}</span><h2>Receiver configuration</h2></div><span class="badge">RECEIVE ONLY</span></div>
+      <div class="grid three compact-grid"><div class="form-row"><label for="digitalFrequency">Channel / carrier frequency</label><div class="input-group"><input id="digitalFrequency" type="number" min="0" step="0.000001" value="${(channel / 1e6).toFixed(6)}"><span class="unit">MHz</span></div></div><div class="form-row"><label>Decode mode</label><div class="read-only-field">${DIGITAL_LABELS[digitalTool]}</div></div><div class="form-row"><label>Input path</label><div class="read-only-field">${path.directSamplingRequired ? "RTL2832U Q direct sampling" : "Normal tuner"}</div></div></div>
+      ${digitalToolSettingsHtml(digitalTool)}
+      <div class="card-actions"><button id="digitalTune" class="secondary-button" type="button">Tune / Apply</button><button id="digitalConnect" class="${sourceType === "none" ? "primary-button" : "secondary-button"}" type="button">${sourceType === "none" ? "Connect RTL-SDR" : sourceRunning ? "Stop Receiver" : "Start Receiver"}</button><button id="digitalSimulation" class="secondary-button" type="button">Run Simulation Fixture</button><button id="digitalMonitor" class="${monitor ? "secondary-button" : "primary-button"}" type="button" ${!sourceRunning ? "disabled" : ""}>${monitor ? "Stop Audio Monitor" : "Monitor Audio"}</button></div>
+      <div class="field-help">Audio monitoring is optional. The ${DIGITAL_LABELS[digitalTool]} decoder receives continuous IQ directly in the processing worker.</div>
+    </article>
+    <div class="notice-box ${path.blocked ? "error" : path.directSamplingRequired ? "warning" : "success"}"><strong>${path.blocked ? "Input path unavailable" : path.directSamplingRequired ? "HF direct-sampling path" : "Receiver path ready"}</strong><p>${path.reason}</p></div>
+    <div class="grid four" id="digitalMetrics"></div>
+    <article class="card"><div class="card-title-row"><div><span class="eyebrow">DECODE OUTPUT</span><h2>${DIGITAL_LABELS[digitalTool]} results</h2></div><span id="digitalResultBadge" class="badge">WAITING</span></div><div id="digitalResults"></div></article>
+  </section>`);
+  document.querySelectorAll("[data-digital-tool]").forEach((button) => button.addEventListener("click", () => {
+    digitalTool = button.dataset.digitalTool;
+    activeApplicationId = digitalTool;
+    projectStore.update((project) => { project.settings.digitalTool = digitalTool; });
+    if (audio.enabled && !currentSettings()[digitalMonitorKey(digitalTool)]) disableAudio();
+    syncAudioProcessing({ resetAudio: true, resetDecoder: true });
+    renderDigitalDecoders();
+  }));
+  $("digitalTune").addEventListener("click", () => setDigitalFrequency(digitalTool, Number($("digitalFrequency").value) * 1e6));
+  $("digitalConnect").addEventListener("click", async () => {
+    if (sourceType === "none") { await connectRadio({ view: "digital", applicationId: digitalTool }); await prepareDigitalReceiver(digitalTool, { restart: false }); }
+    else if (sourceRunning) await stopSource(`${DIGITAL_LABELS[digitalTool]} receiver stopped`);
+    else { await prepareDigitalReceiver(digitalTool, { restart: false }); await startSource(); }
+    if (currentView === "digital") renderDigitalDecoders();
+  });
+  $("digitalSimulation").addEventListener("click", () => startDigitalSimulation(digitalTool));
+  $("digitalMonitor").addEventListener("click", () => toggleDigitalMonitor(digitalTool));
+  $("digitalExportJson").addEventListener("click", exportDigitalJson);
+  $("digitalExportCsv").addEventListener("click", exportDigitalCsv);
+  $("digitalClear").addEventListener("click", () => { clearDigitalResults(digitalTool); syncAudioProcessing({ resetDecoder: true }); renderDigitalResults(); });
+  if ($("afskProfile")) { $("afskProfile").value = settings.afskProfile; $("afskProfile").addEventListener("change", (event) => { projectStore.update((project) => { project.settings.afskProfile = event.target.value; }); syncAudioProcessing({ resetDecoder: true }); renderDigitalDecoders(); }); }
+  $("afskReverse")?.addEventListener("change", (event) => { projectStore.update((project) => { project.settings.afskReverse = event.target.checked; }); syncAudioProcessing({ resetDecoder: true }); });
+  $("aprsReverse")?.addEventListener("change", (event) => { projectStore.update((project) => { project.settings.aprsReverse = event.target.checked; }); syncAudioProcessing({ resetDecoder: true }); });
+  $("acarsIfOffset")?.addEventListener("change", (event) => { const value = Math.max(2000, Math.min(100000, Math.round(Number(event.target.value) || 12000))); projectStore.update((project) => { project.settings.acarsIfOffsetHz = value; }); syncAudioProcessing({ resetDecoder: true }); });
+  if ($("rttyProfile")) { $("rttyProfile").value = settings.rttyProfile; $("rttyProfile").addEventListener("change", (event) => { projectStore.update((project) => { project.settings.rttyProfile = event.target.value; }); syncAudioProcessing({ resetDecoder: true }); renderDigitalDecoders(); }); }
+  if ($("rttySideband")) { $("rttySideband").value = settings.rttySideband; $("rttySideband").addEventListener("change", (event) => { projectStore.update((project) => { project.settings.rttySideband = event.target.value; project.settings.modulation = event.target.value; }); syncAudioProcessing({ resetAudio: true, resetDecoder: true }); renderDigitalDecoders(); }); }
+  $("rttyReverse")?.addEventListener("change", (event) => { projectStore.update((project) => { project.settings.rttyReverse = event.target.checked; }); syncAudioProcessing({ resetDecoder: true }); });
+  $("morseWpm")?.addEventListener("change", (event) => { const value = Math.max(5, Math.min(60, Math.round(Number(event.target.value) || 20))); projectStore.update((project) => { project.settings.morseWpm = value; }); syncAudioProcessing({ resetDecoder: true }); renderDigitalDecoders(); });
+  $("morsePitch")?.addEventListener("change", (event) => { const value = Math.max(300, Math.min(1200, Math.round(Number(event.target.value) || 700))); projectStore.update((project) => { project.settings.morsePitchHz = value; project.settings.cwPitchHz = value; }); syncAudioProcessing({ resetAudio: true, resetDecoder: true }); renderDigitalDecoders(); });
+  $("morseThreshold")?.addEventListener("input", (event) => { const value = Number(event.target.value); projectStore.update((project) => { project.settings.morseThreshold = value; }); syncAudioProcessing({ resetDecoder: true }); });
+  renderDigitalResults();
+}
+
+function renderDigitalResults() {
+  if (currentView !== "digital" || !$("digitalResults")) return;
+  const tool = digitalTool;
+  const status = digitalStatus[tool] || {};
+  const result = digitalResults[tool] || {};
+  const metrics = $("digitalMetrics"); clear(metrics);
+  if (tool === "afsk") metrics.append(metricCard("Characters", String(status.characters ?? result.text?.length ?? 0)), metricCard("Bit rate", status.bitRate ? `${status.bitRate} bit/s` : "—"), metricCard("Tone pair", status.markHz ? `${status.markHz}/${status.spaceHz} Hz` : "—"), metricCard("Clock lane", status.activeLane == null ? "searching" : `lane ${status.activeLane}`));
+  else if (tool === "aprs") metrics.append(metricCard("Valid frames", String(status.frames ?? result.frames?.length ?? 0)), metricCard("Bad FCS", String(status.badCrc ?? 0)), metricCard("Bit rate", "1200 bit/s"), metricCard("Physical", "Bell 202"));
+  else if (tool === "acars") metrics.append(metricCard("Valid blocks", String(status.frames ?? result.frames?.length ?? 0)), metricCard("Bad CRC", String(status.badCrc ?? 0)), metricCard("Bit rate", "2400 bit/s"), metricCard("IF offset", `${Math.abs(Number(currentSettings().acarsIfOffsetHz || 12000))/1000} kHz`));
+  else if (tool === "rtty") metrics.append(metricCard("Characters", String(status.characters ?? result.text?.length ?? 0)), metricCard("Baud", status.baud ? status.baud.toFixed(2) : "45.45"), metricCard("Tone pair", status.markHz ? `${status.markHz}/${status.spaceHz} Hz` : "—"), metricCard("Clock lane", status.activeLane == null ? "searching" : `lane ${status.activeLane}`));
+  else metrics.append(metricCard("Decoded text", `${(result.text || "").trim().length} chars`), metricCard("Speed", `${status.wpm ?? currentSettings().morseWpm} WPM`), metricCard("Current symbol", status.currentSymbol || "—"), metricCard("Tone envelope", Number.isFinite(status.envelope) ? Number(status.envelope).toFixed(3) : "—"));
+  const host = $("digitalResults"); clear(host);
+  const badge = $("digitalResultBadge");
+  if (["afsk", "rtty", "morse"].includes(tool)) {
+    const text = result.text || "";
+    badge.textContent = text.trim() ? "DECODING" : "WAITING"; badge.className = `badge ${text.trim() ? "ready" : ""}`;
+    const pre = node("pre", { class: "decoder-text" }); pre.textContent = text || `No ${DIGITAL_LABELS[tool]} text decoded yet.`; host.append(pre);
+    return;
+  }
+  const frames = result.frames || [];
+  badge.textContent = frames.length ? `${frames.length} STORED` : "WAITING"; badge.className = `badge ${frames.length ? "ready" : ""}`;
+  if (!frames.length) { host.append(emptyState(`No ${DIGITAL_LABELS[tool]} frames decoded yet`, "Tune a known channel and start the receiver, or run the deterministic simulation fixture to verify the local decoder.")); return; }
+  const wrap = node("div", { class: "table-wrap" }); const table = node("table");
+  if (tool === "aprs") {
+    table.append(node("thead", {}, node("tr", {}, ...["Time", "Source", "Destination", "Path", "Information", "Position"].map((text) => node("th", { text })))));
+    const body = node("tbody"); for (const frame of frames) body.append(node("tr", {}, node("td", { text: new Date(frame.receivedAt).toLocaleTimeString() }), node("td", { text: frame.source || "—" }), node("td", { text: frame.destination || "—" }), node("td", { text: (frame.path || []).join(",") || "—" }), node("td", { text: frame.info || "" }), node("td", { text: Number.isFinite(frame.latitude) ? `${frame.latitude.toFixed(5)}, ${frame.longitude.toFixed(5)}` : "—" }))); table.append(body);
+  } else {
+    table.append(node("thead", {}, node("tr", {}, ...["Time", "Registration", "Label", "Block", "Flight", "Message", "Parity"].map((text) => node("th", { text })))));
+    const body = node("tbody"); for (const frame of frames) body.append(node("tr", {}, node("td", { text: new Date(frame.receivedAt).toLocaleTimeString() }), node("td", { text: frame.registration || "—" }), node("td", { text: frame.label || "—" }), node("td", { text: frame.blockId || "—" }), node("td", { text: frame.flightId || "—" }), node("td", { text: frame.text || "" }), node("td", { text: String(frame.parityErrors ?? 0) }))); table.append(body);
+  }
+  wrap.append(table); host.append(wrap);
+}
+
+
+function resolvedSstvInputMode(frequencyHz = currentSettings().sstvFrequencyHz, requested = currentSettings().sstvInputMode) {
+  if (requested === "usb" || requested === "fm") return requested;
+  const hz = Math.max(0, Number(frequencyHz) || 0);
+  // The two promoted workflows are HF amateur SSTV (USB audio) and VHF/ISS
+  // SSTV (FM audio). Auto deliberately stays simple and visible: users can
+  // override it for less common band/mode conventions.
+  return hz > 0 && hz < 30_000_000 ? "usb" : "fm";
+}
+
+function sstvInputPath(frequencyHz = currentSettings().sstvFrequencyHz) {
+  return amateurFrequencyPath(Math.max(0, Number(frequencyHz) || 0), amateurCaps());
+}
+
+function sstvMetadata() {
+  const settings = currentSettings();
+  const total = sstvModeById(sstvImage.modeId)?.lines || sstvImage.height;
+  return {
+    application: APP_NAME,
+    version: APP_VERSION,
+    upstreamCommit: UPSTREAM_COMMIT,
+    generatedAt: new Date().toISOString(),
+    receiver: "SSTV",
+    frequencyHz: Number(settings.sstvFrequencyHz),
+    inputMode: resolvedSstvInputMode(),
+    selectedInputMode: settings.sstvInputMode,
+    modeId: sstvImage.modeId,
+    modeName: sstvImage.modeName,
+    vis: sstvImage.vis,
+    autoVis: settings.sstvAutoVis !== false,
+    phaseOffsetPixels: Number(settings.sstvPhaseOffset || 0),
+    slantTenthsPercent: Number(settings.sstvSlant || 0),
+    receivedLines: sstvImage.receivedLines.size,
+    expectedLines: total,
+    completenessPercent: total ? Math.min(100, (sstvImage.receivedLines.size / total) * 100) : 0,
+    startedAt: sstvImage.startedAt,
+    updatedAt: sstvImage.updatedAt,
+    sourceType,
+    sampleRate: effectiveActual().sampleRate
+  };
+}
+
+function handleSstvEvent(event) {
+  if (!event || typeof event !== "object") return;
+  if (event.type === "mode") {
+    // A valid VIS header is the natural boundary between pictures. Preserve the
+    // old pixels only until a new verified picture header arrives.
+    resetSstvImage({ preserveMode: false });
+    sstvImage.modeId = event.modeId || currentSettings().sstvMode || "martin1";
+    sstvImage.modeName = event.modeName || sstvModeById(sstvImage.modeId)?.name || "SSTV";
+    sstvImage.vis = Number.isFinite(Number(event.vis)) ? Number(event.vis) : null;
+    sstvImage.startedAt = new Date(Number(event.receivedAtMs) || Date.now()).toISOString();
+    paintSstvCanvas();
+  } else if (event.type === "line" && event.rgb instanceof Uint8Array) {
+    const line = Math.max(0, Math.round(Number(event.line) || 0));
+    if (line >= sstvImage.height || event.rgb.length < sstvImage.width * 3) return;
+    if (line === 0 && sstvImage.receivedLines.has(sstvImage.height - 1)) resetSstvImage({ preserveMode: true });
+    if (!sstvImage.startedAt) sstvImage.startedAt = new Date(Number(event.receivedAtMs) || Date.now()).toISOString();
+    const rowStart = line * sstvImage.width * 4;
+    for (let x = 0; x < sstvImage.width; x += 1) {
+      const source = x * 3;
+      const target = rowStart + x * 4;
+      sstvImage.pixels[target] = event.rgb[source];
+      sstvImage.pixels[target + 1] = event.rgb[source + 1];
+      sstvImage.pixels[target + 2] = event.rgb[source + 2];
+      sstvImage.pixels[target + 3] = 255;
+    }
+    sstvImage.receivedLines.add(line);
+    sstvImage.updatedAt = new Date(Number(event.receivedAtMs) || Date.now()).toISOString();
+    paintSstvCanvasLine(line);
+  }
+  if (currentView === "sstv") renderSstvLive();
+}
+
+function handleSstvStatus(status) {
+  if (!status || typeof status !== "object") return;
+  sstvStatus = { ...sstvStatus, ...status };
+  if (status.modeId && !sstvImage.receivedLines.size) {
+    sstvImage.modeId = status.modeId;
+    sstvImage.modeName = status.modeName || sstvModeById(status.modeId)?.name || sstvImage.modeName;
+  }
+  if (currentView === "sstv") renderSstvLive();
+}
+
+function sstvCanvasContext(canvas = $("sstvCanvas")) {
+  if (!canvas) return null;
+  const ctx = canvas.getContext("2d", { alpha: false });
+  if (ctx) ctx.imageSmoothingEnabled = false;
+  return ctx;
+}
+
+function paintSstvCanvas() {
+  const canvas = $("sstvCanvas");
+  const ctx = sstvCanvasContext(canvas);
+  if (!canvas || !ctx) return;
+  if (canvas.width !== sstvImage.width) canvas.width = sstvImage.width;
+  if (canvas.height !== sstvImage.height) canvas.height = sstvImage.height;
+  const image = ctx.createImageData(sstvImage.width, sstvImage.height);
+  image.data.set(sstvImage.pixels);
+  ctx.putImageData(image, 0, 0);
+}
+
+function paintSstvCanvasLine(line) {
+  const canvas = $("sstvCanvas");
+  const ctx = sstvCanvasContext(canvas);
+  if (!canvas || !ctx || line < 0 || line >= sstvImage.height) return;
+  const image = ctx.createImageData(sstvImage.width, 1);
+  const start = line * sstvImage.width * 4;
+  image.data.set(sstvImage.pixels.subarray(start, start + sstvImage.width * 4));
+  ctx.putImageData(image, 0, line);
+}
+
+function renderSstvLive() {
+  if (currentView !== "sstv") return;
+  const total = sstvModeById(sstvImage.modeId)?.lines || sstvImage.height;
+  const lineCount = sstvImage.receivedLines.size;
+  const completeness = total ? Math.min(100, (lineCount / total) * 100) : 0;
+  const badge = $("sstvStatusBadge");
+  if (badge) {
+    let label = "WAITING FOR VIS";
+    if (!sourceRunning) label = sourceType === "none" ? "NO SOURCE" : "STOPPED";
+    else if (lineCount >= total) label = "COMPLETE";
+    else if (lineCount > 0) label = "RECEIVING IMAGE";
+    else if (Number(sstvStatus.syncs || 0) > 0) label = "SYNC";
+    else if (currentSettings().sstvAutoVis === false) label = "WAITING FOR SYNC";
+    badge.textContent = label;
+    badge.className = `badge ${lineCount > 0 || lineCount >= total ? "ready" : ""}`;
+  }
+  const setText = (id, text) => { const el = $(id); if (el) el.textContent = text; };
+  setText("sstvModeReadout", sstvImage.modeName || sstvModeById(currentSettings().sstvMode)?.name || "Martin 1");
+  setText("sstvVisReadout", sstvImage.vis != null ? String(sstvImage.vis) : Number(sstvStatus.lastVis || 0) ? String(sstvStatus.lastVis) : "—");
+  setText("sstvLineReadout", `${lineCount} / ${total}`);
+  setText("sstvCompleteness", `${completeness.toFixed(1)}%`);
+  setText("sstvSyncReadout", String(sstvStatus.syncs ?? 0));
+  setText("sstvAudioRateReadout", Number(sstvStatus.audioRate) ? formatRate(Number(sstvStatus.audioRate)) : "48 kHz target");
+  setText("sstvResolvedInput", resolvedSstvInputMode().toUpperCase());
+  const progress = $("sstvProgressFill");
+  if (progress) progress.style.width = `${completeness}%`;
+}
+
+async function prepareSstvReceiver({ restart = true, resetImage = false } = {}) {
+  activeApplicationId = "sstvrx";
+  const settings = currentSettings();
+  const frequency = Math.max(0, Math.round(Number(settings.sstvFrequencyHz) || SSTV_HF_CALLING_HZ));
+  const rfMode = resolvedSstvInputMode(frequency, settings.sstvInputMode);
+  const path = sstvInputPath(frequency);
+  if (path.blocked) {
+    showMessage({ eyebrow: "SSTV", title: "Selected SSTV frequency is unavailable", body: path.reason });
+    return false;
+  }
+
+  if (sourceType === "replay") {
+    if (resetImage) resetSstvImage({ preserveMode: true });
+    syncAudioProcessing({ resetDecoder: true });
+    if (currentView === "sstv") { paintSstvCanvas(); renderSstvLive(); }
+    return true;
+  }
+
+  const wasRunning = sourceRunning;
+  const desiredRate = sourceType === "simulation" ? Number(settings.sampleRate || 48_000) : 1_024_000;
+  const desiredDirectSampling = sourceType === "live" || sourceType === "none" ? (path.directSampling ?? "off") : "off";
+  const pathChange = sourceType === "live" && radio.device && currentSettings().directSampling !== desiredDirectSampling;
+  const rateChange = sourceType === "live" && radio.device && Number(effectiveActual().sampleRate) !== desiredRate;
+  if (wasRunning && (pathChange || rateChange)) await stopSource("Changing SSTV receiver input configuration");
+  if (pathChange) await updateSetting("directSampling", desiredDirectSampling);
+  else projectStore.update((project) => { project.settings.directSampling = desiredDirectSampling; });
+  if (Number(effectiveActual().sampleRate) !== desiredRate) await updateSetting("sampleRate", desiredRate);
+
+  projectStore.update((project) => {
+    project.settings.sstvFrequencyHz = frequency;
+    project.settings.centerFrequencyHz = frequency;
+    project.settings.modulation = rfMode === "usb" ? "usb" : "nfm";
+    project.settings.audioBandwidthHz = 3000;
+    project.settings.squelchDb = -140;
+    project.settings.directSampling = desiredDirectSampling;
+  });
+  const actual = await tuneTo(frequency);
+  if (actual != null) projectStore.update((project) => { project.settings.sstvFrequencyHz = actual; });
+  if (resetImage) resetSstvImage({ preserveMode: true });
+  activeApplicationId = "sstvrx";
+  syncAudioProcessing({ resetAudio: true, resetDecoder: true });
+  if (wasRunning && !sourceRunning && restart) await startSource();
+  if (currentView === "sstv") { paintSstvCanvas(); renderSstvLive(); }
+  return actual != null;
+}
+
+async function startSstvSimulation() {
+  try {
+    await stopAndReleaseCurrentSource();
+    resetSstvImage({ preserveMode: false });
+    sstvStatus = {};
+    sourceType = "simulation";
+    sourceRunning = false;
+    sourceStats = createSourceStats();
+    activeApplicationId = "sstvrx";
+    projectStore.update((project) => {
+      project.settings.sstvFrequencyHz = SSTV_HF_CALLING_HZ;
+      project.settings.centerFrequencyHz = SSTV_HF_CALLING_HZ;
+      project.settings.sampleRate = 48_000;
+      project.settings.directSampling = "off";
+      project.settings.sstvInputMode = "usb";
+      project.settings.sstvMode = "martin1";
+      project.settings.sstvAutoVis = true;
+      project.settings.sstvPhaseOffset = 0;
+      project.settings.sstvSlant = 0;
+      project.settings.modulation = "usb";
+    });
+    simulation.configure({ sampleRate: 48_000, centerFrequencyHz: SSTV_HF_CALLING_HZ, blockSamples: currentSettings().usbBlockSamples, scenario: "sstv" });
+    processing?.reset();
+    stateMachine.force(ConnectionState.SIMULATION, "SSTV Martin 1 image fixture selected");
+    navigate("sstv");
+    syncAudioProcessing({ resetDecoder: true });
+    await startSource();
+  } catch (error) { presentError("SSTV simulation could not start", error); }
+}
+
+function clearSstvImage() {
+  resetSstvImage({ preserveMode: true });
+  sstvStatus = {};
+  syncAudioProcessing({ resetDecoder: true });
+  paintSstvCanvas();
+  renderSstvLive();
+}
+
+function exportSstvMetadata() {
+  downloadBlob(new Blob([JSON.stringify(sstvMetadata(), null, 2)], { type: "application/json" }), `mayhem-rtl-sstv-${Date.now()}.json`);
+}
+
+function exportSstvPng() {
+  if (!sstvImage.receivedLines.size) {
+    showMessage({ eyebrow: "SSTV", title: "No image lines have been received yet", body: "Start the receiver or run the Martin 1 simulation fixture before exporting an image." });
+    return;
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = sstvImage.width; canvas.height = sstvImage.height;
+  const ctx = canvas.getContext("2d", { alpha: false });
+  const image = ctx.createImageData(sstvImage.width, sstvImage.height);
+  image.data.set(sstvImage.pixels); ctx.putImageData(image, 0, 0);
+  canvas.toBlob((blob) => { if (blob) downloadBlob(blob, `mayhem-rtl-sstv-${sstvImage.modeId}-${Date.now()}.png`); }, "image/png");
+}
+
+function renderSstv() {
+  activeApplicationId = "sstvrx";
+  const settings = currentSettings();
+  const frequency = Number(settings.sstvFrequencyHz || SSTV_HF_CALLING_HZ);
+  const resolved = resolvedSstvInputMode(frequency, settings.sstvInputMode);
+  const path = sstvInputPath(frequency);
+  const modeOptions = SSTV_MODES.map((mode) => `<option value="${mode.id}">${mode.name}${mode.id === "martin1" ? " · reference" : " · experimental"}</option>`).join("");
+  const sourceLabel = sourceType === "none" ? "Connect RTL-SDR" : sourceRunning ? "Stop Receiver" : "Start Receiver";
+  staticView(`<section class="view sstv-view">
+    ${pageHeading("SLOW-SCAN TELEVISION (SSTV)", "Receive radio pictures line by line", "A continuous-IQ SSTV workbench with 48 kHz internal decoding, Vertical Interval Signaling (VIS) mode detection, progressive RGB reconstruction, phase/slant correction, and local image export.", `<button id="sstvSimulation" class="secondary-button" type="button">Run Martin 1 Simulation</button><button id="sstvSavePng" class="secondary-button" type="button">Save PNG</button><button id="sstvExportMetadata" class="secondary-button" type="button">Export Metadata</button>`)}
+    <div class="sstv-layout">
+      <article class="card sstv-controls-card"><div class="card-title-row"><div><span class="eyebrow">RECEIVER</span><h2>Audio-frequency image channel</h2></div><span id="sstvStatusBadge" class="badge">WAITING</span></div>
+        <div class="sstv-presets"><button id="sstvPresetHf" class="secondary-button" type="button">20 m · 14.230 MHz USB</button><button id="sstvPresetIss" class="secondary-button" type="button">ISS · 145.800 MHz FM</button></div>
+        <div class="grid two compact-grid"><div class="form-row"><label for="sstvFrequency">Frequency</label><div class="input-group"><input id="sstvFrequency" type="number" min="0" step="0.00001" value="${(frequency/1e6).toFixed(6)}"><span class="unit">MHz</span></div></div><div class="form-row"><label for="sstvInputMode">RF/audio input</label><select id="sstvInputMode"><option value="auto">Auto</option><option value="usb">Upper Sideband (USB)</option><option value="fm">Frequency Modulation (FM)</option></select><div class="field-help">Resolved input: <strong id="sstvResolvedInput">${resolved.toUpperCase()}</strong></div></div></div>
+        <div class="grid two compact-grid"><div class="form-row"><label for="sstvMode">Image mode</label><select id="sstvMode">${modeOptions}</select></div><label class="check-row"><input id="sstvAutoVis" type="checkbox" ${settings.sstvAutoVis !== false ? "checked" : ""}> Auto-detect mode from VIS header</label></div>
+        <div class="grid two compact-grid"><div class="form-row"><label for="sstvPhase">Horizontal phase <span id="sstvPhaseValue">${Number(settings.sstvPhaseOffset||0)} px</span></label><input id="sstvPhase" type="range" min="-160" max="160" step="1" value="${Number(settings.sstvPhaseOffset||0)}"></div><div class="form-row"><label for="sstvSlant">Slant correction <span id="sstvSlantValue">${(Number(settings.sstvSlant||0)/10).toFixed(1)}%</span></label><input id="sstvSlant" type="range" min="-100" max="100" step="1" value="${Number(settings.sstvSlant||0)}"></div></div>
+        <div class="card-actions"><button id="sstvTune" class="secondary-button" type="button">Tune / Apply</button><button id="sstvConnect" class="${sourceType === "none" ? "primary-button" : "secondary-button"}" type="button">${sourceLabel}</button><button id="sstvClear" class="secondary-button" type="button">Clear Image</button><button id="sstvCapture" class="secondary-button" type="button" ${!sourceRunning ? "disabled" : ""}>Capture IQ</button></div>
+        <div class="notice-box ${path.blocked ? "error" : path.directSamplingRequired ? "warning" : "success"}"><strong>${path.blocked ? "Input path unavailable" : path.directSamplingRequired ? "HF direct-sampling path" : "Receiver path ready"}</strong><p>${path.reason}</p></div>
+        <div class="field-help">Martin 1 is the promoted v0.8.10 reference mode. Scottie 1/2/DX, Martin 2, and SC2-180 are available for fixture/manual experimentation but remain pending broader validation.</div>
+      </article>
+      <article class="card sstv-image-card"><div class="card-title-row"><div><span class="eyebrow">PROGRESSIVE IMAGE</span><h2 id="sstvModeReadout">${sstvImage.modeName}</h2></div><span class="badge">320 × 256</span></div><div class="sstv-canvas-wrap"><canvas id="sstvCanvas" width="320" height="256" aria-label="Progressively decoded SSTV image"></canvas></div><div class="progress-track"><div id="sstvProgressFill" class="progress-fill"></div></div><div class="grid three compact-grid"><div class="metric"><span class="label">Lines</span><strong id="sstvLineReadout">0 / 256</strong></div><div class="metric"><span class="label">Complete</span><strong id="sstvCompleteness">0.0%</strong></div><div class="metric"><span class="label">VIS</span><strong id="sstvVisReadout">—</strong></div><div class="metric"><span class="label">Syncs</span><strong id="sstvSyncReadout">0</strong></div><div class="metric"><span class="label">Internal audio</span><strong id="sstvAudioRateReadout">48 kHz target</strong></div><div class="metric"><span class="label">Source</span><strong>${sourceType.toUpperCase()}</strong></div></div></article>
+    </div>
+  </section>`);
+  $("sstvInputMode").value = settings.sstvInputMode;
+  $("sstvMode").value = SSTV_MODE_IDS.includes(settings.sstvMode) ? settings.sstvMode : "martin1";
+  $("sstvPresetHf").addEventListener("click", async () => { projectStore.update((p) => { p.settings.sstvFrequencyHz=SSTV_HF_CALLING_HZ; p.settings.sstvInputMode="usb"; }); await prepareSstvReceiver({restart:true,resetImage:true}); renderSstv(); });
+  $("sstvPresetIss").addEventListener("click", async () => { projectStore.update((p) => { p.settings.sstvFrequencyHz=SSTV_ISS_HZ; p.settings.sstvInputMode="fm"; }); await prepareSstvReceiver({restart:true,resetImage:true}); renderSstv(); });
+  $("sstvInputMode").addEventListener("change", (event) => { projectStore.update((p) => { p.settings.sstvInputMode=event.target.value; }); syncAudioProcessing({resetDecoder:true}); renderSstvLive(); });
+  $("sstvMode").addEventListener("change", (event) => { projectStore.update((p) => { p.settings.sstvMode=event.target.value; }); resetSstvImage({preserveMode:false}); sstvImage.modeId=event.target.value; sstvImage.modeName=sstvModeById(event.target.value)?.name||"SSTV"; syncAudioProcessing({resetDecoder:true}); paintSstvCanvas(); renderSstvLive(); });
+  $("sstvAutoVis").addEventListener("change", (event) => { projectStore.update((p) => { p.settings.sstvAutoVis=event.target.checked; }); syncAudioProcessing(); renderSstvLive(); });
+  $("sstvPhase").addEventListener("input", (event) => { const value=Math.max(-160,Math.min(160,Math.round(Number(event.target.value)||0))); projectStore.update((p)=>{p.settings.sstvPhaseOffset=value;}); $("sstvPhaseValue").textContent=`${value} px`; syncAudioProcessing(); });
+  $("sstvSlant").addEventListener("input", (event) => { const value=Math.max(-100,Math.min(100,Math.round(Number(event.target.value)||0))); projectStore.update((p)=>{p.settings.sstvSlant=value;}); $("sstvSlantValue").textContent=`${(value/10).toFixed(1)}%`; syncAudioProcessing(); });
+  $("sstvTune").addEventListener("click", async () => { const hz=Math.max(0,Math.round(Number($("sstvFrequency").value)*1e6)); projectStore.update((p)=>{p.settings.sstvFrequencyHz=hz;}); await prepareSstvReceiver({restart:true,resetImage:true}); renderSstv(); });
+  $("sstvConnect").addEventListener("click", async () => {
+    if (sourceType === "none") { await prepareSstvReceiver({restart:false,resetImage:true}); await connectRadio({view:"sstv",applicationId:"sstvrx"}); await prepareSstvReceiver({restart:false}); }
+    else if (sourceRunning) await stopSource("SSTV receiver stopped");
+    else { await prepareSstvReceiver({restart:false}); await startSource(); }
+    if (currentView === "sstv") renderSstv();
+  });
+  $("sstvSimulation").addEventListener("click", startSstvSimulation);
+  $("sstvClear").addEventListener("click", clearSstvImage);
+  $("sstvSavePng").addEventListener("click", exportSstvPng);
+  $("sstvExportMetadata").addEventListener("click", exportSstvMetadata);
+  $("sstvCapture").addEventListener("click", async () => {
+    if (captureStore?.activeStatus) await stopCapture("complete");
+    else await startCapture({ name:`sstv-${(Number(currentSettings().sstvFrequencyHz)/1e6).toFixed(6)}MHz`, notes:`SSTV ${resolvedSstvInputMode().toUpperCase()} · ${sstvModeById(currentSettings().sstvMode)?.name||currentSettings().sstvMode}` });
+    if (currentView === "sstv") renderSstv();
+  });
+  requestAnimationFrame(() => { paintSstvCanvas(); renderSstvLive(); });
+}
+
+
+async function preparePocsagReceiver({ restart = true } = {}) {
+  const wasRunning = sourceRunning;
+  const settings = currentSettings();
+  activeApplicationId = "pocsag";
+  projectStore.update((project) => {
+    project.settings.modulation = "nfm";
+    project.settings.audioBandwidthHz = 3500;
+    project.settings.squelchDb = -140;
+    project.settings.sampleRate = 1_024_000;
+  });
+  if (sourceType === "live" && radio.device && radio.actual.directSampling !== 0) await updateSetting("directSampling", "off");
+  if (Number(effectiveActual().sampleRate) !== 1_024_000) await updateSetting("sampleRate", 1_024_000);
+  const actual = await tuneTo(Number(settings.pocsagFrequencyHz || 929_612_500));
+  if (actual != null) projectStore.update((project) => { project.settings.pocsagFrequencyHz = actual; });
+  activeApplicationId = "pocsag";
+  syncAudioProcessing({ resetAudio: true, resetDecoder: true });
+  if (wasRunning && !sourceRunning && restart) await startSource();
+  updateGlobalStatus();
+  if (currentView === "pocsag") renderPocsag();
+}
+
+async function tunePocsag(frequencyHz) {
+  const requested = Math.max(0, Math.round(Number(frequencyHz) || 0));
+  const actual = await tuneTo(requested);
+  if (actual != null) projectStore.update((project) => { project.settings.pocsagFrequencyHz = actual; });
+  if (currentView === "pocsag") renderPocsag();
+}
+
+async function stepPocsag(direction) {
+  const settings = currentSettings();
+  await tunePocsag(Number(effectiveActual().frequencyHz) + Number(direction) * Number(settings.pocsagStepHz || 12_500));
+}
+
+async function togglePocsagMonitor() {
+  const next = !Boolean(currentSettings().pocsagMonitorAudio);
+  projectStore.update((project) => {
+    project.settings.pocsagMonitorAudio = next;
+    project.settings.modulation = "nfm";
+    project.settings.audioBandwidthHz = 3500;
+    project.settings.squelchDb = -140;
+  });
+  activeApplicationId = "pocsag";
+  if (next) {
+    if (!audio.enabled) await enableAudio();
+    else syncAudioProcessing({ resetAudio: true });
+  } else if (audio.enabled) disableAudio();
+  else syncAudioProcessing({ resetAudio: true });
+  if (currentView === "pocsag") renderPocsag();
+}
+
+async function startPocsagSimulation() {
+  try {
+    await stopAndReleaseCurrentSource();
+    sourceType = "simulation";
+    sourceRunning = false;
+    sourceStats = createSourceStats();
+    projectStore.update((project) => {
+      project.settings.pocsagFrequencyHz = 929_612_500;
+      project.settings.centerFrequencyHz = 929_612_500;
+      project.settings.sampleRate = 1_024_000;
+      project.settings.modulation = "nfm";
+      project.settings.audioBandwidthHz = 3500;
+      project.settings.squelchDb = -140;
+      project.settings.pocsagBaudRate = "auto";
+      project.settings.pocsagMonitorAudio = false;
+    });
+    simulation.configure({ sampleRate: 1_024_000, centerFrequencyHz: 929_612_500, blockSamples: currentSettings().usbBlockSamples, scenario: "pocsag" });
+    processing?.reset();
+    stateMachine.force(ConnectionState.SIMULATION, "Explicit POCSAG fixture selected");
+    activeApplicationId = "pocsag";
+    syncAudioProcessing({ resetAudio: true, resetDecoder: true });
+    navigate("pocsag");
+    await startSource();
+    renderPocsag();
+  } catch (error) { presentError("POCSAG simulation could not start", error); }
+}
+
+function pocsagVisibleMessages() { return pocsagMessages.filter(pocsagFilterMatches); }
+
+function exportPocsagJson() {
+  const messages = pocsagVisibleMessages();
+  const payload = {
+    application: APP_NAME,
+    version: APP_VERSION,
+    upstreamCommit: UPSTREAM_COMMIT,
+    generatedAt: new Date().toISOString(),
+    centerFrequencyHz: effectiveActual().frequencyHz,
+    sampleRate: effectiveActual().sampleRate,
+    baudSelection: currentSettings().pocsagBaudRate,
+    decoderStats: pocsagStats,
+    filter: { mode: currentSettings().pocsagFilterMode, address: currentSettings().pocsagFilterAddress },
+    messages
+  };
+  downloadBlob(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }), `mayhem-rtl-pocsag-${Date.now()}.json`);
+}
+
+function exportPocsagCsv() {
+  const rows = [["timestamp", "ric", "function", "bitrate", "type", "message", "corrected_bits", "uncorrectable_codewords", "inverted"]];
+  for (const page of pocsagVisibleMessages()) rows.push([
+    new Date(page.receivedAtMs).toISOString(), page.ric, page.function, page.bitrate, page.type, page.message,
+    page.correctedBits || 0, page.uncorrectableCodewords || 0, page.inverted ? "true" : "false"
+  ]);
+  const csv = rows.map((row) => row.map(escapeCsv).join(",")).join("\n");
+  downloadBlob(new Blob([csv], { type: "text/csv" }), `mayhem-rtl-pocsag-${Date.now()}.csv`);
+}
+
+function renderPocsag() {
+  activeApplicationId = "pocsag";
+  syncAudioProcessing();
+  const settings = currentSettings();
+  const frequencyMHz = Number(settings.pocsagFrequencyHz || effectiveActual().frequencyHz || 929_612_500) / 1e6;
+  const monitorActive = Boolean(settings.pocsagMonitorAudio && audio.enabled);
+  staticView(`<section class="view pocsag-view">
+    ${pageHeading("POCSAG", "POCSAG Pager Receiver", "Receive and decode local POCSAG paging traffic at 512, 1200, or 2400 bit/s. BCH correction, RIC/function extraction, alpha/numeric decoding, filtering, and export all run locally in the browser.", `<button id="pocsagSimulation" class="secondary-button" type="button">Run Simulation Fixture</button><button id="pocsagExportJson" class="secondary-button" type="button">Export JSON</button><button id="pocsagExportCsv" class="secondary-button" type="button">Export CSV</button><button id="pocsagClear" class="secondary-button" type="button">Clear Messages</button>`)}
+    <div class="grid four" id="pocsagMetrics"></div>
+    <article class="card">
+      <div class="card-title-row"><div><span class="eyebrow">RECEIVER</span><h2>Paging channel</h2></div><span id="pocsagSyncBadge" class="badge">SEARCHING</span></div>
+      <div class="grid three compact-grid">
+        <div class="form-row"><label for="pocsagFrequency">Center frequency</label><div class="input-group"><input id="pocsagFrequency" type="number" min="0" step="0.000001" value="${frequencyMHz.toFixed(6)}"><span class="unit">MHz</span></div><div class="field-help">Common examples include 929.6125 MHz in North America and 466.175 MHz in parts of Europe; actual paging channels vary.</div></div>
+        <div class="form-row"><label for="pocsagBaud">Bit rate</label><select id="pocsagBaud"><option value="auto">Auto 512 / 1200 / 2400</option><option value="512">512 bit/s</option><option value="1200">1200 bit/s</option><option value="2400">2400 bit/s</option></select></div>
+        <div class="form-row"><label for="pocsagStep">Tuning step</label><select id="pocsagStep"><option value="6250">6.25 kHz</option><option value="12500">12.5 kHz</option><option value="25000">25 kHz</option><option value="50000">50 kHz</option></select></div>
+      </div>
+      <div class="card-actions"><button id="pocsagDown" class="secondary-button" type="button">− Step</button><button id="pocsagTune" class="secondary-button" type="button">Tune</button><button id="pocsagUp" class="secondary-button" type="button">+ Step</button><button id="pocsagConnect" class="${sourceType === "none" ? "primary-button" : "secondary-button"}" type="button">${sourceType === "none" ? "Connect RTL-SDR" : sourceRunning ? "Stop Receiver" : "Start Receiver"}</button><button id="pocsagMonitor" class="${monitorActive ? "secondary-button" : "primary-button"}" type="button" ${!sourceRunning ? "disabled" : ""}>${monitorActive ? "Stop FSK Monitor" : "Monitor FSK Audio"}</button></div>
+      <div class="field-help">The audio monitor is optional. POCSAG decoding does not depend on speaker playback.</div>
+    </article>
+    <article class="card"><div class="card-title-row"><div><span class="eyebrow">ADDRESS FILTER</span><h2>RIC filter</h2></div><span class="badge">LOCAL ONLY</span></div><div class="grid two compact-grid"><div class="form-row"><label for="pocsagFilterMode">Filter mode</label><select id="pocsagFilterMode"><option value="all">Show all decoded pages</option><option value="keep">Only this RIC</option><option value="drop">Ignore this RIC</option></select></div><div class="form-row"><label for="pocsagFilterAddress">Receiver Identity Code (RIC)</label><input id="pocsagFilterAddress" type="number" min="0" max="2097151" step="1" value="${Number(settings.pocsagFilterAddress || 0)}"></div></div></article>
+    <div class="notice-box warning"><strong>Paging messages can contain private or sensitive information.</strong><p>MAYHEM RTL keeps decoded content local and performs no uploads. Use reception and retained message data only where permitted by applicable law, policy, and authorization.</p></div>
+    <article class="card"><div class="card-title-row"><div><span class="eyebrow">DECODED PAGES</span><h2>Recent messages</h2></div><span id="pocsagMessageCount" class="badge">0 shown</span></div><div id="pocsagTable"></div></article>
+  </section>`);
+  $("pocsagBaud").value = String(settings.pocsagBaudRate ?? "auto");
+  $("pocsagStep").value = String(settings.pocsagStepHz || 12_500);
+  $("pocsagFilterMode").value = settings.pocsagFilterMode || "all";
+  $("pocsagFrequency").addEventListener("change", (event) => { projectStore.update((project) => { project.settings.pocsagFrequencyHz = Math.round(Number(event.target.value) * 1e6); }); });
+  $("pocsagBaud").addEventListener("change", (event) => { const value = event.target.value === "auto" ? "auto" : Number(event.target.value); projectStore.update((project) => { project.settings.pocsagBaudRate = value; }); activeApplicationId = "pocsag"; syncAudioProcessing({ resetDecoder: true }); renderPocsagResults(); });
+  $("pocsagStep").addEventListener("change", (event) => projectStore.update((project) => { project.settings.pocsagStepHz = Number(event.target.value); }));
+  $("pocsagFilterMode").addEventListener("change", (event) => { projectStore.update((project) => { project.settings.pocsagFilterMode = event.target.value; }); renderPocsagResults(); });
+  $("pocsagFilterAddress").addEventListener("change", (event) => { const value = Math.max(0, Math.min(0x1fffff, Math.round(Number(event.target.value) || 0))); projectStore.update((project) => { project.settings.pocsagFilterAddress = value; }); renderPocsagResults(); });
+  $("pocsagDown").addEventListener("click", () => stepPocsag(-1));
+  $("pocsagUp").addEventListener("click", () => stepPocsag(1));
+  $("pocsagTune").addEventListener("click", () => tunePocsag(Number($("pocsagFrequency").value) * 1e6));
+  $("pocsagConnect").addEventListener("click", async () => {
+    if (sourceType === "none") {
+      await connectRadio({ view: "pocsag", applicationId: "pocsag" });
+      await preparePocsagReceiver({ restart: false });
+    } else if (sourceRunning) await stopSource("POCSAG receiver stopped");
+    else { await preparePocsagReceiver({ restart: false }); await startSource(); }
+    if (currentView === "pocsag") renderPocsag();
+  });
+  $("pocsagMonitor").addEventListener("click", togglePocsagMonitor);
+  $("pocsagSimulation").addEventListener("click", startPocsagSimulation);
+  $("pocsagExportJson").addEventListener("click", exportPocsagJson);
+  $("pocsagExportCsv").addEventListener("click", exportPocsagCsv);
+  $("pocsagClear").addEventListener("click", () => { pocsagMessages = []; pocsagStats = { syncs: 0, batches: 0, pages: 0, correctedBits: 0, uncorrectableCodewords: 0, lastBitrate: 0, lastInverted: false, lanes: {} }; syncAudioProcessing({ resetDecoder: true }); renderPocsagResults(); });
+  renderPocsagResults();
+}
+
+function renderPocsagResults() {
+  if (currentView !== "pocsag" || !$("pocsagTable")) return;
+  const visible = pocsagVisibleMessages();
+  const lanes = pocsagStats.lanes || {};
+  const locked = Object.entries(lanes).filter(([, value]) => value?.locked).map(([rate]) => rate);
+  const badge = $("pocsagSyncBadge");
+  if (badge) { badge.textContent = locked.length ? `CLOCK ${locked.join("/")} bit/s` : pocsagStats.syncs ? "SYNC SEEN" : "SEARCHING"; badge.className = `badge ${locked.length || pocsagStats.syncs ? "ready" : ""}`; }
+  const metrics = $("pocsagMetrics"); clear(metrics); metrics.append(
+    metricCard("Sync words", String(pocsagStats.syncs || 0)),
+    metricCard("Batches", String(pocsagStats.batches || 0)),
+    metricCard("Decoded pages", String(pocsagStats.pages || pocsagMessages.length)),
+    metricCard("Last bitrate", pocsagStats.lastBitrate ? `${pocsagStats.lastBitrate} bit/s` : "—")
+  );
+  $("pocsagMessageCount").textContent = `${visible.length} shown · ${pocsagMessages.length} stored`;
+  const host = $("pocsagTable"); clear(host);
+  if (!visible.length) { host.append(emptyState("No POCSAG pages decoded yet", "Tune a known paging channel, leave bit rate on Auto, start the receiver, or run the built-in simulation fixture to verify the local decoder.")); return; }
+  const wrap = node("div", { class: "table-wrap" }); const table = node("table");
+  table.append(node("thead", {}, node("tr", {}, ...["Time", "RIC", "F", "Rate", "Type", "Message", "ECC", "Polarity"].map((text) => node("th", { text })))));
+  const body = node("tbody");
+  for (const page of visible) body.append(node("tr", {},
+    node("td", { text: new Date(page.receivedAtMs).toLocaleTimeString() }),
+    node("td", { text: String(page.ric) }),
+    node("td", { text: String(page.function ?? "—") }),
+    node("td", { text: `${page.bitrate || "—"}` }),
+    node("td", { text: page.type || "unknown" }),
+    node("td", { text: page.message || "(address / tone only)" }),
+    node("td", { text: `${page.correctedBits || 0} corrected / ${page.uncorrectableCodewords || 0} bad` }),
+    node("td", { text: page.inverted ? "inverted" : "normal" })
+  ));
+  table.append(body); wrap.append(table); host.append(wrap);
+}
+
 function handleAdsbFrame(frame) {
   if (!frame?.valid) return;
   adsbFrameCount += 1;
@@ -1487,6 +3148,7 @@ async function renderDiagnostics() {
     diagnosticCard("Performance", { "Requested profile": currentSettings().performanceProfile, "Runtime plan": runtimeStreamPlan.profile, "Sample handoff": processingStats.transportMode, "Shared memory eligible": String(crossOriginIsolated && typeof SharedArrayBuffer === "function"), "Block samples": String(runtimeStreamPlan.blockSamples), "USB transfer depth": String(runtimeStreamPlan.transferDepth), "Processing queue": `${processingStats.pending} / ${processingStats.capacity}`, "Shared pool high-water": processingStats.sharedPool ? `${processingStats.sharedPool.highWater} / ${processingStats.sharedPool.slots}` : "not active", Governor: performanceLabel(processingStats.governorLevel), "Display ceiling": `${processingStats.displayRateHz} Hz`, "Spectrum stride": String(processingStats.spectrumStride), "Spectrum blocks": String(processingStats.spectrumBlocks) }),
     diagnosticCard("Hardware verification", { Status: HARDWARE_VERIFICATION.label, Source: HARDWARE_VERIFICATION.source, Observed: HARDWARE_VERIFICATION.observedAt, Device: HARDWARE_VERIFICATION.deviceProduct, Tuner: HARDWARE_VERIFICATION.tunerFamily, "Observed rate": formatRate(HARDWARE_VERIFICATION.sampleRate), "Observed drops": String(HARDWARE_VERIFICATION.observedDroppedSamples), "Verified now": liveVerificationPresentation().label, Pending: HARDWARE_VERIFICATION.pendingChecks.join("; ") }),
     diagnosticCard("Audio", { State: audio.state, Enabled: String(audio.enabled), Mode: currentSettings().modulation.toUpperCase(), "Output rate": formatRate(audio.snapshot().sampleRate || currentSettings().audioOutputRate), Volume: `${Math.round(currentSettings().volume * 100)}%`, Mute: String(currentSettings().mute), Squelch: `${currentSettings().squelchDb} dBFS`, "Squelch open": String(audioStats.squelchOpen), Buffering: String(Boolean(audioStats.buffering)), "Queued audio": `${Number(audioStats.queuedMs || 0).toFixed(0)} ms`, "Rebuffer events": String(audioStats.underruns || 0), "Frames pushed": String(audioStats.pushedFrames || 0), "Samples pushed": String(audioStats.pushedSamples || 0), "Worklet drops": String(audioStats.droppedInputSamples || 0), "Push errors": String(audioStats.pushErrors || 0), "Audio level": Number.isFinite(audioStats.levelRms) ? audioStats.levelRms.toFixed(4) : "—", RIT: `${currentSettings().ritHz || 0} Hz`, "SSB low cut": `${currentSettings().ssbLowCutHz || 0} Hz`, "CW pitch": `${currentSettings().cwPitchHz || 0} Hz`, AGC: currentSettings().agcMode }),
+    diagnosticCard("POCSAG", { Decoder: activeApplicationId === "pocsag" ? "armed" : "inactive", Baud: String(currentSettings().pocsagBaudRate ?? "auto"), Syncs: String(pocsagStats.syncs || 0), Batches: String(pocsagStats.batches || 0), Pages: String(pocsagStats.pages || 0), "Corrected bits": String(pocsagStats.correctedBits || 0), "Uncorrectable codewords": String(pocsagStats.uncorrectableCodewords || 0), "Last bitrate": pocsagStats.lastBitrate ? `${pocsagStats.lastBitrate} bit/s` : "—", Inverted: String(Boolean(pocsagStats.lastInverted)), "Stored messages": String(pocsagMessages.length) }),
     diagnosticCard("Application", { Active: APPLICATIONS.find((entry) => entry.id === activeApplicationId)?.name || activeApplicationId, "Port state": APPLICATIONS.find((entry) => entry.id === activeApplicationId)?.portState || "—", Verification: APPLICATIONS.find((entry) => entry.id === activeApplicationId)?.verificationState || "—", "Worker time": processingStats.workerTimeMs == null ? "—" : `${processingStats.workerTimeMs.toFixed(2)} ms`, "Source latency": processingStats.sourceLatencyMs == null ? "—" : `${processingStats.sourceLatencyMs.toFixed(2)} ms`, "Worker sequence gaps": String(processingStats.sequenceGaps), "Capture backlog": String(captureStore?.activeStatus?.backlog ?? 0), "Last error": log.toJSON().filter((entry) => entry.level === "error").at(-1)?.message || "none" })
   );
   $("diagnosticLog").textContent = log.toText() || "No diagnostic events recorded.";
@@ -1553,9 +3215,10 @@ function renderHelp() {
 }
 
 function renderInspector() {
+  if ($("inspectorReset")) $("inspectorReset").hidden = currentView !== "receiver";
   if (currentView === "receiver") renderReceiverInspector();
   else if (currentView === "diagnostics") renderDiagnosticsInspector();
-  else if (["applications", "compatibility", "broadcast", "amateur", "scanner", "adsb"].includes(currentView)) renderApplicationInspector();
+  else if (["applications", "compatibility", "broadcast", "amateur", "scanner", "analysis", "pocsag", "paging", "digital", "telemetry", "tracking", "sstv", "adsb"].includes(currentView)) renderApplicationInspector();
   else renderStartInspector();
 }
 
@@ -1756,6 +3419,7 @@ async function startSource(options = {}) {
 
 async function stopSource(reason = "Source stopped") {
   if (!sourceRunning) return;
+  if (signalHunterState.armed) disarmSignalHunter();
   disableAudio();
   try {
     if (captureStore?.activeStatus) await stopCapture("partial-source-stop");
@@ -1791,20 +3455,20 @@ async function disconnectSource() {
   } catch (error) { presentError("Source disconnect reported an error", error, { receivingStopped: !sourceRunning }); }
 }
 
-async function startCapture() {
-  if (!captureStore) { presentError("Capture storage unavailable", new Error("Indexed Database is unavailable.")); return; }
-  if (!sourceRunning) { showMessage({ eyebrow: "CAPTURE", title: "Start the receiver first", body: "Capture begins only after a live, simulation, or replay sample source is active." }); return; }
+async function startCapture({ name = null, notes = null, silent = false } = {}) {
+  if (!captureStore) { if (!silent) presentError("Capture storage unavailable", new Error("Indexed Database is unavailable.")); return null; }
+  if (!sourceRunning) { if (!silent) showMessage({ eyebrow: "CAPTURE", title: "Start the receiver first", body: "Capture begins only after a live, simulation, or replay sample source is active." }); return null; }
   try {
     const estimate = await captureStore.storageEstimate();
     const actual = effectiveActual();
     const oneMinute = actual.sampleRate * 2 * 60;
-    if (estimate.available != null && estimate.available < oneMinute) {
-      showMessage({ eyebrow: "STORAGE", title: "Insufficient room for a one-minute capture", body: `Available storage is ${formatBytes(estimate.available)}; one minute at this rate requires approximately ${formatBytes(oneMinute)}.`, actions: [{ label: "Open Captures", callback: () => navigate("captures") }] });
-      return;
+    if (estimate.available != null && estimate.available < Math.min(oneMinute, actual.sampleRate * 2 * 10)) {
+      if (!silent) showMessage({ eyebrow: "STORAGE", title: "Insufficient room for capture", body: `Available storage is ${formatBytes(estimate.available)}; ten seconds at this rate requires approximately ${formatBytes(actual.sampleRate * 2 * 10)}.`, actions: [{ label: "Open Captures", callback: () => navigate("captures") }] });
+      return null;
     }
     captureFailure = null;
-    await captureStore.start({
-      name: `${sourceType}-${formatFrequency(actual.frequencyHz, 3)}`,
+    const record = await captureStore.start({
+      name: name || `${sourceType}-${formatFrequency(actual.frequencyHz, 3)}`,
       sampleRate: actual.sampleRate,
       centerFrequencyHz: actual.frequencyHz,
       tuner: sourceType === "live" ? radio.caps.tuner : sourceType,
@@ -1820,20 +3484,28 @@ async function startCapture() {
       directSampling: currentSettings().directSampling,
       source: sourceType,
       deviceIdentifier: sourceType === "live" ? `${radio.safeDeviceInfo(false).vendorId ?? ""}:${radio.safeDeviceInfo(false).productId ?? ""}` : sourceType,
-      notes: projectStore.project.notes
+      applicationId: activeApplicationId,
+      sstvInputMode: currentSettings().sstvInputMode,
+      sstvMode: currentSettings().sstvMode,
+      sstvAutoVis: currentSettings().sstvAutoVis,
+      sstvPhaseOffset: currentSettings().sstvPhaseOffset,
+      sstvSlant: currentSettings().sstvSlant,
+      notes: notes ?? projectStore.project.notes
     });
-    log.info("Capture activated", { sourceType });
+    log.info("Capture activated", { sourceType, name: record.name, silent });
     updateReceiverButtons(); updateGlobalStatus(); renderInspector();
-  } catch (error) { presentError("Capture could not start", error, { receivingStopped: false }); }
+    return record;
+  } catch (error) { if (!silent) presentError("Capture could not start", error, { receivingStopped: false }); else log.error("Silent capture could not start", {message:error.message}); return null; }
 }
 
-async function stopCapture(recoveryState = "complete") {
-  if (!captureStore?.activeStatus) return;
+async function stopCapture(recoveryState = "complete", { silent = false } = {}) {
+  if (!captureStore?.activeStatus) return null;
   try {
     const record = await captureStore.stop({ droppedSamples: activeStreamStats().ringDrops ?? 0, notes: projectStore.project.notes, recoveryState: captureFailure ? "write-failed" : recoveryState });
     projectStore.update((project) => { project.recentCaptures = [record.id, ...project.recentCaptures.filter((id) => id !== record.id)].slice(0, 20); }, { immediate: true });
-    showMessage({ eyebrow: "CAPTURE SAVED LOCALLY", title: record.name, body: `${formatBytes(record.bytes)} of raw samples were committed with ${record.droppedSamples} reported dropped samples.`, actions: [{ label: "Open Captures", callback: () => navigate("captures") }] });
-  } catch (error) { presentError("Capture closed with an error", error, { receivingStopped: false, dataSafe: "All chunks committed before the failure remain local and the capture is marked for recovery." }); }
+    if (!silent) showMessage({ eyebrow: "CAPTURE SAVED LOCALLY", title: record.name, body: `${formatBytes(record.bytes)} of raw samples were committed with ${record.droppedSamples} reported dropped samples.`, actions: [{ label: "Open Captures", callback: () => navigate("captures") }] });
+    return record;
+  } catch (error) { if (!silent) presentError("Capture closed with an error", error, { receivingStopped: false, dataSafe: "All chunks committed before the failure remain local and the capture is marked for recovery." }); else log.error("Silent capture closed with an error", {message:error.message}); return null; }
   finally { updateReceiverButtons(); updateGlobalStatus(); renderInspector(); }
 }
 

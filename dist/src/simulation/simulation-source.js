@@ -1,4 +1,10 @@
 import { generateAdsbIqFixture } from "../dsp/adsb.js";
+import { generatePocsagIqFixture } from "../dsp/pocsag.js";
+import { generateAfskIqFixture, generateAprsIqFixture, generateAcarsIqFixture, generateRttyIqFixture, generateMorseIqFixture } from "../dsp/digital-decoders.js";
+import { generateNexusWeatherPulses, generateTpmsSchraderOokPulses, renderOokPulsesToIq } from "../dsp/subghz-telemetry.js";
+import { generateFlex1600Fixture, generateTwoToneFixture } from "../dsp/paging-decoders.js";
+import { generateAisIqFixture, generateRs41IqFixture, generateEpirbIqFixture } from "../dsp/tracking-decoders.js";
+import { generateSstvIqFixture } from "../dsp/sstv.js";
 
 function xorshift32(seed) {
   let value = seed >>> 0 || 0x12345678;
@@ -17,7 +23,21 @@ const SCENARIOS = Object.freeze({
   changing: "Changing signal level",
   overflow: "Buffer overflow stress",
   disconnect: "Device disconnect recovery",
-  adsb: "Automatic Dependent Surveillance–Broadcast fixture"
+  adsb: "Automatic Dependent Surveillance–Broadcast fixture",
+  pocsag: "POCSAG pager fixture",
+  afsk: "AFSK terminal fixture",
+  aprs: "APRS / AX.25 fixture",
+  acars: "ACARS fixture",
+  rtty: "RTTY / ITA2 fixture",
+  morse: "Morse fixture",
+  tpms: "TPMS OOK fixture",
+  weather: "Weather sensor OOK fixture",
+  flex: "FLEX 1600 pager fixture",
+  twotone: "Two-Tone paging fixture",
+  ais: "AIS marine position-report fixture",
+  radiosonde: "Vaisala RS41-SG radiosonde fixture",
+  epirb: "406 MHz COSPAS-SARSAT beacon fixture",
+  sstv: "SSTV Martin 1 image fixture"
 });
 
 export function simulationScenarios() { return { ...SCENARIOS }; }
@@ -38,12 +58,19 @@ export class SimulationSource extends EventTarget {
     this.onBlock = null;
     this.adsbFixtureStream = null;
     this.adsbFixtureRate = 0;
+    this.pocsagFixtureStream = null;
+    this.pocsagFixtureRate = 0;
+    this.digitalFixtureStreams = new Map();
+    this.telemetryFixtureStreams = new Map();
+    this.pagingFixtureStreams = new Map();
+    this.trackingFixtureStreams = new Map();
+    this.sstvFixtureStreams = new Map();
   }
 
   configure(settings = {}) {
     if (Number.isFinite(settings.sampleRate)) {
       const nextRate = Number(settings.sampleRate);
-      if (nextRate !== this.sampleRate) { this.adsbFixtureStream = null; this.adsbFixtureRate = 0; }
+      if (nextRate !== this.sampleRate) { this.adsbFixtureStream = null; this.adsbFixtureRate = 0; this.pocsagFixtureStream = null; this.pocsagFixtureRate = 0; this.digitalFixtureStreams.clear(); this.telemetryFixtureStreams.clear(); this.pagingFixtureStreams.clear(); this.trackingFixtureStreams.clear(); this.sstvFixtureStreams.clear(); }
       this.sampleRate = nextRate;
     }
     if (Number.isFinite(settings.centerFrequencyHz)) this.centerFrequencyHz = Number(settings.centerFrequencyHz);
@@ -94,6 +121,131 @@ export class SimulationSource extends EventTarget {
     const output = new Uint8Array(this.blockSamples * 2);
     const sr = this.sampleRate;
     const scenario = this.scenario;
+    if (scenario === "sstv") {
+      const cacheKey = `sstv:${sr}`;
+      let stream = this.sstvFixtureStreams.get(cacheKey);
+      if (!stream) {
+        const fixture = generateSstvIqFixture({ sampleRate: sr, mode: "martin1", lines: 256, rfMode: "usb", includeVis: true });
+        stream = new Uint8Array(fixture.i.length * 2);
+        for (let index = 0; index < fixture.i.length; index += 1) {
+          stream[index * 2] = Math.max(0, Math.min(255, Math.round(127.5 + fixture.i[index] * 112)));
+          stream[index * 2 + 1] = Math.max(0, Math.min(255, Math.round(127.5 + fixture.q[index] * 112)));
+        }
+        this.sstvFixtureStreams.set(cacheKey, stream);
+      }
+      const sampleCount = stream.length / 2;
+      for (let n = 0; n < this.blockSamples; n += 1) {
+        const pos = (this.sampleIndex + n) % sampleCount;
+        output[n * 2] = stream[pos * 2]; output[n * 2 + 1] = stream[pos * 2 + 1];
+      }
+      this.sampleIndex += this.blockSamples;
+      return output.buffer;
+    }
+    if (["ais", "radiosonde", "epirb"].includes(scenario)) {
+      const cacheKey = `${scenario}:${sr}`;
+      let stream = this.trackingFixtureStreams.get(cacheKey);
+      if (!stream) {
+        const fixture = scenario === "ais" ? generateAisIqFixture({ sampleRate: sr, channel: "A" })
+          : scenario === "radiosonde" ? generateRs41IqFixture({ sampleRate: sr })
+          : generateEpirbIqFixture({ sampleRate: sr });
+        stream = new Uint8Array(fixture.i.length * 2);
+        for (let index = 0; index < fixture.i.length; index += 1) {
+          stream[index * 2] = Math.max(0, Math.min(255, Math.round(127.5 + fixture.i[index] * 112)));
+          stream[index * 2 + 1] = Math.max(0, Math.min(255, Math.round(127.5 + fixture.q[index] * 112)));
+        }
+        this.trackingFixtureStreams.set(cacheKey, stream);
+      }
+      const sampleCount = stream.length / 2;
+      for (let n = 0; n < this.blockSamples; n += 1) {
+        const pos = (this.sampleIndex + n) % sampleCount;
+        output[n * 2] = stream[pos * 2]; output[n * 2 + 1] = stream[pos * 2 + 1];
+      }
+      this.sampleIndex += this.blockSamples;
+      return output.buffer;
+    }
+    if (["flex", "twotone"].includes(scenario)) {
+      const cacheKey = `${scenario}:${sr}`;
+      let stream = this.pagingFixtureStreams.get(cacheKey);
+      if (!stream) {
+        const fixture = scenario === "flex" ? generateFlex1600Fixture({ sampleRate: sr }) : generateTwoToneFixture({ sampleRate: sr });
+        stream = new Uint8Array(fixture.i.length * 2);
+        for (let index = 0; index < fixture.i.length; index += 1) {
+          stream[index * 2] = Math.max(0, Math.min(255, Math.round(127.5 + fixture.i[index] * 112)));
+          stream[index * 2 + 1] = Math.max(0, Math.min(255, Math.round(127.5 + fixture.q[index] * 112)));
+        }
+        this.pagingFixtureStreams.set(cacheKey, stream);
+      }
+      const sampleCount = stream.length / 2;
+      for (let n = 0; n < this.blockSamples; n += 1) { const pos = (this.sampleIndex + n) % sampleCount; output[n*2]=stream[pos*2]; output[n*2+1]=stream[pos*2+1]; }
+      this.sampleIndex += this.blockSamples;
+      return output.buffer;
+    }
+    if (["tpms", "weather"].includes(scenario)) {
+      const cacheKey = `${scenario}:${sr}`;
+      let stream = this.telemetryFixtureStreams.get(cacheKey);
+      if (!stream) {
+        const pulses = scenario === "weather" ? generateNexusWeatherPulses().pulses : generateTpmsSchraderOokPulses().pulses;
+        const fixture = renderOokPulsesToIq(pulses, { sampleRate: sr });
+        stream = new Uint8Array(fixture.i.length * 2);
+        for (let index = 0; index < fixture.i.length; index += 1) {
+          stream[index * 2] = Math.max(0, Math.min(255, Math.round(127.5 + fixture.i[index] * 112)));
+          stream[index * 2 + 1] = Math.max(0, Math.min(255, Math.round(127.5 + fixture.q[index] * 112)));
+        }
+        this.telemetryFixtureStreams.set(cacheKey, stream);
+      }
+      const sampleCount = stream.length / 2;
+      for (let n = 0; n < this.blockSamples; n += 1) {
+        const position = (this.sampleIndex + n) % sampleCount;
+        output[n * 2] = stream[position * 2]; output[n * 2 + 1] = stream[position * 2 + 1];
+      }
+      this.sampleIndex += this.blockSamples;
+      return output.buffer;
+    }
+    if (["afsk", "aprs", "acars", "rtty", "morse"].includes(scenario)) {
+      const cacheKey = `${scenario}:${sr}`;
+      let stream = this.digitalFixtureStreams.get(cacheKey);
+      if (!stream) {
+        const fixture = scenario === "afsk" ? generateAfskIqFixture({ sampleRate: sr })
+          : scenario === "aprs" ? generateAprsIqFixture({ sampleRate: sr })
+          : scenario === "acars" ? generateAcarsIqFixture({ sampleRate: sr })
+          : scenario === "rtty" ? generateRttyIqFixture({ sampleRate: sr })
+          : generateMorseIqFixture({ sampleRate: sr });
+        stream = new Uint8Array(fixture.i.length * 2);
+        for (let index = 0; index < fixture.i.length; index += 1) {
+          stream[index * 2] = Math.max(0, Math.min(255, Math.round(127.5 + fixture.i[index] * 112)));
+          stream[index * 2 + 1] = Math.max(0, Math.min(255, Math.round(127.5 + fixture.q[index] * 112)));
+        }
+        this.digitalFixtureStreams.set(cacheKey, stream);
+      }
+      const sampleCount = stream.length / 2;
+      for (let n = 0; n < this.blockSamples; n += 1) {
+        const position = (this.sampleIndex + n) % sampleCount;
+        output[n * 2] = stream[position * 2];
+        output[n * 2 + 1] = stream[position * 2 + 1];
+      }
+      this.sampleIndex += this.blockSamples;
+      return output.buffer;
+    }
+    if (scenario === "pocsag") {
+      if (!this.pocsagFixtureStream || this.pocsagFixtureRate !== sr) {
+        const fixture = generatePocsagIqFixture({ sampleRate: sr, bitrate: 1200, ric: 1234560, functionCode: 3, message: "MAYHEM RTL POCSAG TEST" });
+        const stream = new Uint8Array(fixture.i.length * 2);
+        for (let index = 0; index < fixture.i.length; index += 1) {
+          stream[index * 2] = Math.max(0, Math.min(255, Math.round(127.5 + fixture.i[index] * 112)));
+          stream[index * 2 + 1] = Math.max(0, Math.min(255, Math.round(127.5 + fixture.q[index] * 112)));
+        }
+        this.pocsagFixtureStream = stream;
+        this.pocsagFixtureRate = sr;
+      }
+      const sampleCount = this.pocsagFixtureStream.length / 2;
+      for (let n = 0; n < this.blockSamples; n += 1) {
+        const position = (this.sampleIndex + n) % sampleCount;
+        output[n * 2] = this.pocsagFixtureStream[position * 2];
+        output[n * 2 + 1] = this.pocsagFixtureStream[position * 2 + 1];
+      }
+      this.sampleIndex += this.blockSamples;
+      return output.buffer;
+    }
     if (scenario === "adsb") {
       if (!this.adsbFixtureStream || this.adsbFixtureRate !== sr) {
         const frames = [

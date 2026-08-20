@@ -8,6 +8,9 @@ const root = process.cwd();
 test("user-facing version has one package source of truth", async () => {
   const pkg = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
   const config = await readFile(path.join(root, "web/src/config.js"), "utf8");
+  const lock = JSON.parse(await readFile(path.join(root, "package-lock.json"), "utf8"));
+  assert.equal(lock.version, pkg.version);
+  assert.equal(lock.packages?.[""]?.version, pkg.version);
   const cmake = await readFile(path.join(root, "CMakeLists.txt"), "utf8");
   assert.match(config, new RegExp(`APP_VERSION = ["']${pkg.version.replaceAll('.', '\\.')}`));
   assert.match(cmake, new RegExp(`VERSION ${pkg.version.replaceAll('.', '\\.')}`));

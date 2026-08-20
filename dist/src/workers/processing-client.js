@@ -81,8 +81,8 @@ export class ProcessingClient extends EventTarget {
     return true;
   }
 
-  updateSettings(settings, resetAveraging = false, resetAudio = false) {
-    this.worker.postMessage({ type: "settings", settings, resetAveraging, resetAudio });
+  updateSettings(settings, resetAveraging = false, resetAudio = false, resetDecoder = false) {
+    this.worker.postMessage({ type: "settings", settings, resetAveraging, resetAudio, resetDecoder });
   }
 
   reset() {
@@ -126,6 +126,19 @@ export class ProcessingClient extends EventTarget {
     else if (message?.type === "ack") this.dispatchEvent(new CustomEvent("ack", { detail: message }));
     else if (message?.type === "audio") this.dispatchEvent(new CustomEvent("audio", { detail: message }));
     else if (message?.type === "adsb") this.dispatchEvent(new CustomEvent("adsb", { detail: message.frame }));
+    else if (message?.type === "pocsag") this.dispatchEvent(new CustomEvent("pocsag", { detail: message.page }));
+    else if (message?.type === "pocsag-status") this.dispatchEvent(new CustomEvent("pocsag-status", { detail: message.status }));
+    else if (message?.type === "digital") this.dispatchEvent(new CustomEvent("digital", { detail: { mode: message.mode, event: message.event } }));
+    else if (message?.type === "digital-status") this.dispatchEvent(new CustomEvent("digital-status", { detail: { mode: message.mode, status: message.status } }));
+    else if (message?.type === "telemetry") this.dispatchEvent(new CustomEvent("telemetry", { detail: { mode: message.mode, event: message.event } }));
+    else if (message?.type === "telemetry-status") this.dispatchEvent(new CustomEvent("telemetry-status", { detail: { mode: message.mode, status: message.status } }));
+    else if (message?.type === "paging") this.dispatchEvent(new CustomEvent("paging", { detail: { mode: message.mode, event: message.event } }));
+    else if (message?.type === "paging-status") this.dispatchEvent(new CustomEvent("paging-status", { detail: { mode: message.mode, status: message.status } }));
+    else if (message?.type === "tracking") this.dispatchEvent(new CustomEvent("tracking", { detail: { mode: message.mode, event: message.event } }));
+    else if (message?.type === "tracking-status") this.dispatchEvent(new CustomEvent("tracking-status", { detail: { mode: message.mode, status: message.status } }));
+    else if (message?.type === "sstv") this.dispatchEvent(new CustomEvent("sstv", { detail: message.event }));
+    else if (message?.type === "sstv-status") this.dispatchEvent(new CustomEvent("sstv-status", { detail: message.status }));
+    else if (message?.type === "timeseries") this.dispatchEvent(new CustomEvent("timeseries", { detail: message }));
     else if (message?.type === "warning") { this.log?.warn(message.message, { detail: message.detail }); this.dispatchEvent(new CustomEvent("warning", { detail: message })); }
     else if (message?.type === "ready") { this.wasmMode = message.wasmMode; this.log?.info("Processing worker ready", { wasmMode: message.wasmMode, transportMode: this.transportMode }); }
   }

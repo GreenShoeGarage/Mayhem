@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-app-version="0.8.2">
+<html lang="en" data-app-version="0.8.11">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -7,9 +7,9 @@
   <meta name="description" content="MAYHEM RTL — browser-native, receive-only RTL-SDR workbench">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob: data:; worker-src 'self' blob:; connect-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>MAYHEM RTL</title>
-  <link rel="manifest" href="./manifest.webmanifest?v=0.8.2">
+  <link rel="manifest" href="./manifest.webmanifest?v=0.8.11">
   <link rel="icon" href="./assets/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css?v=0.8.2">
+  <link rel="stylesheet" href="./styles.css?v=0.8.11">
 </head>
 <body>
   <a class="skip-link" href="#workspace">Skip to instrument workspace</a>
@@ -17,7 +17,7 @@
     <header class="topbar">
       <button id="leftToggle" class="icon-button panel-toggle" type="button" aria-label="Collapse navigation" aria-expanded="true">☰</button>
       <div class="brand-block" aria-label="Application identity">
-        <div class="brand-line"><span class="brand-mark">M</span><strong>MAYHEM RTL</strong><span id="versionLabel" class="version-label">v0.8.2</span></div>
+        <div class="brand-line"><span class="brand-mark">M</span><strong>MAYHEM RTL</strong><span id="versionLabel" class="version-label">v0.8.11</span></div>
         <div class="build-line"><span>Upstream</span><code id="upstreamLabel">44736b9c</code><span class="divider-dot">•</span><span id="verificationLabel">development build</span></div>
       </div>
       <div class="header-status" role="status" aria-live="polite">
@@ -38,20 +38,45 @@
 
     <aside id="leftNav" class="left-nav" aria-label="Primary navigation">
       <nav id="navButtons" class="nav-list">
-        <button class="nav-button active" type="button" data-view="home"><span class="nav-glyph">⌂</span><span>Home</span></button>
-        <button class="nav-button" type="button" data-view="receiver"><span class="nav-glyph">⌁</span><span>Receiver</span></button>
-        <button class="nav-button" type="button" data-view="broadcast"><span class="nav-glyph">♫</span><span>Broadcast Radio</span></button>
-        <button class="nav-button" type="button" data-view="amateur"><span class="nav-glyph">⌁</span><span>Amateur Radio</span></button>
-        <button class="nav-button" type="button" data-view="scanner"><span class="nav-glyph">⇥</span><span>Scanner</span></button>
-        <button class="nav-button" type="button" data-view="adsb"><span class="nav-glyph">✈</span><span>ADS-B</span></button>
-        <button class="nav-button" type="button" data-view="applications"><span class="nav-glyph">▦</span><span>Applications</span></button>
-        <button class="nav-button" type="button" data-view="stations"><span class="nav-glyph">★</span><span>Saved Stations</span></button>
-        <button class="nav-button" type="button" data-view="captures"><span class="nav-glyph">●</span><span>Captures</span></button>
-        <button class="nav-button" type="button" data-view="replay"><span class="nav-glyph">▶</span><span>Replay</span></button>
-        <button class="nav-button" type="button" data-view="compatibility"><span class="nav-glyph">≋</span><span>Compatibility</span></button>
-        <button class="nav-button" type="button" data-view="diagnostics"><span class="nav-glyph">⌕</span><span>Diagnostics</span></button>
-        <button class="nav-button" type="button" data-view="settings"><span class="nav-glyph">⚙</span><span>Settings</span></button>
-        <button class="nav-button" type="button" data-view="help"><span class="nav-glyph">?</span><span>Help</span></button>
+        <div class="nav-section">
+          <div class="nav-section-label">START</div>
+          <button class="nav-button active" type="button" data-view="home"><span class="nav-glyph">⌂</span><span>Home</span></button>
+        </div>
+        <div class="nav-section">
+          <div class="nav-section-label">LISTEN</div>
+          <button class="nav-button" type="button" data-view="receiver"><span class="nav-glyph">⌁</span><span>Receiver</span></button>
+          <button class="nav-button" type="button" data-view="broadcast"><span class="nav-glyph">♫</span><span>Broadcast</span></button>
+          <button class="nav-button" type="button" data-view="amateur"><span class="nav-glyph">◉</span><span>Amateur Radio</span></button>
+          <button class="nav-button" type="button" data-view="scanner"><span class="nav-glyph">⇥</span><span>Scanner</span></button>
+          <button class="nav-button" type="button" data-view="sstv"><span class="nav-glyph">▧</span><span>SSTV</span></button>
+        </div>
+        <div class="nav-section">
+          <div class="nav-section-label">DECODE</div>
+          <button class="nav-button" type="button" data-view="digital"><span class="nav-glyph">⌁</span><span>Digital</span></button>
+          <button class="nav-button" type="button" data-view="pocsag"><span class="nav-glyph">P</span><span>POCSAG</span></button>
+          <button class="nav-button" type="button" data-view="paging"><span class="nav-glyph">⌁</span><span>Paging</span></button>
+          <button class="nav-button" type="button" data-view="telemetry"><span class="nav-glyph">⌁</span><span>Sub-GHz</span></button>
+          <button class="nav-button" type="button" data-view="tracking"><span class="nav-glyph">⌖</span><span>Tracking</span></button>
+          <button class="nav-button" type="button" data-view="adsb"><span class="nav-glyph">✈</span><span>ADS-B</span></button>
+        </div>
+        <div class="nav-section">
+          <div class="nav-section-label">ANALYZE</div>
+          <button class="nav-button" type="button" data-view="analysis"><span class="nav-glyph">⌁</span><span>Signal Analysis</span></button>
+          <button class="nav-button" type="button" data-view="applications"><span class="nav-glyph">▦</span><span>Receiver Library</span></button>
+        </div>
+        <div class="nav-section">
+          <div class="nav-section-label">REVIEW</div>
+          <button class="nav-button" type="button" data-view="stations"><span class="nav-glyph">★</span><span>Stations</span></button>
+          <button class="nav-button" type="button" data-view="captures"><span class="nav-glyph">●</span><span>Captures</span></button>
+          <button class="nav-button" type="button" data-view="replay"><span class="nav-glyph">▶</span><span>Replay</span></button>
+        </div>
+        <div class="nav-section nav-section-system">
+          <div class="nav-section-label">SUPPORT</div>
+          <button class="nav-button advanced-control" type="button" data-view="compatibility"><span class="nav-glyph">≋</span><span>Compatibility</span></button>
+          <button class="nav-button advanced-control" type="button" data-view="diagnostics"><span class="nav-glyph">⌕</span><span>Diagnostics</span></button>
+          <button class="nav-button advanced-control" type="button" data-view="settings"><span class="nav-glyph">⚙</span><span>Settings</span></button>
+          <button class="nav-button" type="button" data-view="help"><span class="nav-glyph">?</span><span>Help</span></button>
+        </div>
       </nav>
       <div class="nav-footer">
         <div class="privacy-stamp"><span class="shield">◇</span><div><strong>LOCAL ONLY</strong><small>No telemetry or uploads</small></div></div>
@@ -73,10 +98,10 @@
 
     <footer class="status-strip" aria-label="Receiver status">
       <span><b>Device</b> <span id="statusDevice">none</span></span>
-      <span><b>Tuner</b> <span id="statusTuner">—</span></span>
+      <span class="advanced-status"><b>Tuner</b> <span id="statusTuner">—</span></span>
       <span><b>Center</b> <span id="statusFrequency">100.000 MHz</span></span>
-      <span><b>Rate</b> <span id="statusRate">1.024 Msps</span></span>
-      <span><b>Gain</b> <span id="statusGain">automatic</span></span>
+      <span class="advanced-status"><b>Rate</b> <span id="statusRate">1.024 Msps</span></span>
+      <span class="advanced-status"><b>Gain</b> <span id="statusGain">automatic</span></span>
       <span><b>Level</b> <span id="statusLevel">— dBFS</span></span>
       <span><b>Audio</b> <span id="statusAudio">off</span></span>
       <span class="advanced-status"><b>Queue</b> <span id="statusQueue">0%</span></span>
@@ -88,7 +113,7 @@
 
   <dialog id="aboutDialog" class="dialog-card">
     <form method="dialog">
-      <div class="dialog-header"><div><span class="eyebrow">ABOUT</span><h2>MAYHEM RTL v0.8.2</h2></div><button class="icon-button" value="close" aria-label="Close">×</button></div>
+      <div class="dialog-header"><div><span class="eyebrow">ABOUT</span><h2>MAYHEM RTL v0.8.11</h2></div><button class="icon-button" value="close" aria-label="Close">×</button></div>
       <p>A browser-native, local-first, receive-only port foundation derived from <code>mayhem-b200</code>.</p>
       <div class="notice-box"><strong>Independent browser port</strong><p>This is not an official Mayhem, PortaPack, HackRF, RTL-SDR Blog, or Ettus Research release.</p></div>
       <dl class="about-grid">
@@ -122,6 +147,6 @@
   <input id="projectImportInput" type="file" accept="application/json,.json" hidden>
   <input id="replayFileInput" type="file" accept=".cu8,.iq,.bin,application/octet-stream" hidden>
   <input id="replayMetadataInput" type="file" accept="application/json,.json" hidden>
-  <script type="module" src="./src/app.js?v=0.8.2"></script>
+  <script type="module" src="./src/app.js?v=0.8.11"></script>
 </body>
 </html>

@@ -1,8 +1,8 @@
 export const APP_NAME = "MAYHEM RTL";
-export const APP_VERSION = "0.8.2";
+export const APP_VERSION = "0.8.11";
 export const UPSTREAM_COMMIT = "44736b9ca844732e18f35e86eb5beece1d9c2c57";
 export const WEBRTLSDR_COMMIT = "5699cec220cb0349e8f9144b7b71d3d03b5d9dbf";
-export const PROJECT_SCHEMA_VERSION = 5;
+export const PROJECT_SCHEMA_VERSION = 12;
 export const CAPTURE_FORMAT = "CU8_INTERLEAVED_IQ";
 export const HARDWARE_VERIFICATION = Object.freeze({
   state: "reference-hardware-validated",
@@ -15,7 +15,7 @@ export const HARDWARE_VERIFICATION = Object.freeze({
   validatedSampleRates: [1_024_000, 2_400_000],
   observedDroppedSamples: 0,
   verifiedCapabilities: ["connect", "tune", "receive", "spectrum", "waterfall", "retune while receiving", "gain change", "sample-rate change", "stop/restart", "hot unplug/reconnect", "30-minute 1.024 Msps soak", "2.4 Msps / 60-minute soak", "2.4 Msps receive + capture", "SharedArrayBuffer stream path", "bounded long-run memory/queue behavior"],
-  pendingChecks: ["v0.8.2 USB/LSB/CW on-air validation", "Amateur Radio HF direct-sampling review", "multi-device matrix", "R828D hardware", "R860 hardware", "cross-browser hardware matrix"]
+  pendingChecks: ["Digital decoder suite physical/on-air review", "Signal Analysis Suite physical workflow review", "POCSAG on-air decode validation", "USB/LSB/CW on-air validation", "Amateur Radio HF direct-sampling review", "SSTV live/on-air image validation", "multi-device matrix", "R828D hardware", "R860 hardware", "cross-browser hardware matrix"]
 });
 
 export const DEFAULT_SETTINGS = Object.freeze({
@@ -63,5 +63,76 @@ export const DEFAULT_SETTINGS = Object.freeze({
   ssbLowCutHz: 300,
   ritHz: 0,
   cwPitchHz: 700,
-  agcMode: "medium"
+  agcMode: "medium",
+  pocsagFrequencyHz: 929_612_500,
+  pocsagStepHz: 12_500,
+  pocsagBaudRate: "auto",
+  pocsagMonitorAudio: false,
+  pocsagFilterMode: "all",
+  pocsagFilterAddress: 0,
+  pagingTool: "flex",
+  flexFrequencyHz: 929_662_500,
+  twoToneFrequencyHz: 154_000_000,
+  analysisTool: "level",
+  detectorThresholdDbfs: -50,
+  detectorHysteresisDb: 3,
+  detectorMinActiveMs: 80,
+  detectorReleaseMs: 250,
+  searchThresholdDbfs: -60,
+  searchProminenceDb: 6,
+  searchSeparationHz: 12500,
+  lookingGlassStartHz: 88_000_000,
+  lookingGlassEndHz: 108_000_000,
+  lookingGlassStepHz: 800_000,
+  lookingGlassDwellMs: 120,
+  foxHuntFloorDbfs: -100,
+  foxHuntCeilingDbfs: -20,
+  hunterMode: "single",
+  hunterThresholdDbfs: -45,
+  hunterCaptureSeconds: 5,
+  hunterCooldownMs: 2000,
+  hunterStartHz: 433_000_000,
+  hunterEndHz: 435_000_000,
+  hunterStepHz: 25_000,
+  hunterDwellMs: 180,
+  timeSinkPoints: 512,
+  digitalTool: "aprs",
+  afskFrequencyHz: 144_390_000,
+  afskProfile: "bell202",
+  afskReverse: false,
+  afskMonitorAudio: false,
+  aprsFrequencyHz: 144_390_000,
+  aprsReverse: false,
+  aprsMonitorAudio: false,
+  acarsFrequencyHz: 131_825_000,
+  acarsIfOffsetHz: 12_000,
+  acarsMonitorAudio: false,
+  rttyFrequencyHz: 14_080_000,
+  rttyProfile: "eu",
+  rttySideband: "usb",
+  rttyReverse: false,
+  rttyMonitorAudio: false,
+  morseFrequencyHz: 14_050_000,
+  morseWpm: 20,
+  morsePitchHz: 700,
+  morseThreshold: 0.035,
+  morseMonitorAudio: false,
+  telemetryTool: "tpms",
+  tpmsFrequencyHz: 315_000_000,
+  tpmsBand: "315",
+  weatherFrequencyHz: 433_920_000,
+  weatherProtocol: "nexus",
+  telemetryNotify: false,
+  trackingTool: "ais",
+  aisCenterFrequencyHz: 162_000_000,
+  radiosondeFrequencyHz: 400_500_000,
+  radiosondeProtocol: "rs41",
+  epirbFrequencyHz: 406_037_000,
+  epirbIfOffsetHz: 12_000,
+  sstvFrequencyHz: 14_230_000,
+  sstvInputMode: "auto",
+  sstvMode: "martin1",
+  sstvAutoVis: true,
+  sstvPhaseOffset: 0,
+  sstvSlant: 0,
 });
