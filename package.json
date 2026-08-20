@@ -1,0 +1,17 @@
+{
+  "name": "mayhem-rtl-web",
+  "version": "0.7.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser-native, receive-only RTL-SDR port foundation for mayhem-b200.",
+  "license": "GPL-2.0-or-later",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/browser/*.test.mjs && node scripts/test-cpp.mjs && node scripts/verify-no-network.mjs dist",
+    "serve": "node scripts/serve-local.mjs",
+    "package": "node scripts/package-release.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111713">
+  <meta name="description" content="MAYHEM RTL — browser-native, receive-only RTL-SDR workbench">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob: data:; worker-src 'self' blob:; connect-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>MAYHEM RTL</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#workspace">Skip to instrument workspace</a>
+  <div id="app" class="app-shell" data-mode="easy" data-left-open="false" data-right-open="false">
+    <header class="topbar">
+      <button id="leftToggle" class="icon-button panel-toggle" type="button" aria-label="Collapse navigation" aria-expanded="true">☰</button>
+      <div class="brand-block" aria-label="Application identity">
+        <div class="brand-line"><span class="brand-mark">M</span><strong>MAYHEM RTL</strong><span id="versionLabel" class="version-label">v__APP_VERSION__</span></div>
+        <div class="build-line"><span>Upstream</span><code id="upstreamLabel">44736b9c</code><span class="divider-dot">•</span><span id="verificationLabel">development build</span></div>
+      </div>
+      <div class="header-status" role="status" aria-live="polite">
+        <span id="deviceChip" class="status-chip neutral"><span class="status-dot"></span><span>No device</span></span>
+        <span id="receiveChip" class="status-chip neutral"><span class="status-dot"></span><span>Receiver stopped</span></span>
+        <span id="autosaveChip" class="status-chip saved"><span class="status-dot"></span><span>Saved locally</span></span>
+      </div>
+      <div class="header-actions">
+        <div class="segmented" role="group" aria-label="Interface depth">
+          <button id="easyModeButton" class="segment active" type="button" aria-pressed="true">Easy</button>
+          <button id="advancedModeButton" class="segment" type="button" aria-pressed="false">Advanced</button>
+        </div>
+        <button id="helpButton" class="text-button" type="button">Help</button>
+        <button id="aboutButton" class="text-button" type="button">About</button>
+        <button id="rightToggle" class="icon-button panel-toggle" type="button" aria-label="Collapse inspector" aria-expanded="true">⋮</button>
+      </div>
+    </header>
+
+    <aside id="leftNav" class="left-nav" aria-label="Primary navigation">
+      <nav id="navButtons" class="nav-list">
+        <button class="nav-button active" type="button" data-view="home"><span class="nav-glyph">⌂</span><span>Home</span></button>
+        <button class="nav-button" type="button" data-view="receiver"><span class="nav-glyph">⌁</span><span>Receiver</span></button>
+        <button class="nav-button" type="button" data-view="applications"><span class="nav-glyph">▦</span><span>Applications</span></button>
+        <button class="nav-button" type="button" data-view="stations"><span class="nav-glyph">★</span><span>Saved Stations</span></button>
+        <button class="nav-button" type="button" data-view="captures"><span class="nav-glyph">●</span><span>Captures</span></button>
+        <button class="nav-button" type="button" data-view="replay"><span class="nav-glyph">▶</span><span>Replay</span></button>
+        <button class="nav-button" type="button" data-view="compatibility"><span class="nav-glyph">≋</span><span>Compatibility</span></button>
+        <button class="nav-button" type="button" data-view="diagnostics"><span class="nav-glyph">⌕</span><span>Diagnostics</span></button>
+        <button class="nav-button" type="button" data-view="settings"><span class="nav-glyph">⚙</span><span>Settings</span></button>
+        <button class="nav-button" type="button" data-view="help"><span class="nav-glyph">?</span><span>Help</span></button>
+      </nav>
+      <div class="nav-footer">
+        <div class="privacy-stamp"><span class="shield">◇</span><div><strong>LOCAL ONLY</strong><small>No telemetry or uploads</small></div></div>
+      </div>
+    </aside>
+
+    <main id="workspace" class="workspace" tabindex="-1">
+      <section id="modeBanner" class="mode-banner hidden" aria-live="assertive"></section>
+      <div id="viewHost" class="view-host"></div>
+    </main>
+
+    <aside id="rightInspector" class="right-inspector" aria-label="Contextual inspector">
+      <div class="inspector-heading">
+        <div><span class="eyebrow">CONTEXT</span><h2 id="inspectorTitle">Start</h2></div>
+        <button id="inspectorReset" class="small-button" type="button">Reset</button>
+      </div>
+      <div id="inspectorHost" class="inspector-host"></div>
+    </aside>
+
+    <footer class="status-strip" aria-label="Receiver status">
+      <span><b>Device</b> <span id="statusDevice">none</span></span>
+      <span><b>Tuner</b> <span id="statusTuner">—</span></span>
+      <span><b>Center</b> <span id="statusFrequency">100.000 MHz</span></span>
+      <span><b>Rate</b> <span id="statusRate">1.024 Msps</span></span>
+      <span><b>Gain</b> <span id="statusGain">automatic</span></span>
+      <span><b>Level</b> <span id="statusLevel">— dBFS</span></span>
+      <span><b>Audio</b> <span id="statusAudio">off</span></span>
+      <span class="advanced-status"><b>Queue</b> <span id="statusQueue">0%</span></span>
+      <span class="advanced-status"><b>Stream</b> <span id="statusPerformance">Healthy</span></span>
+      <span><b>Dropped</b> <span id="statusDrops">0</span></span>
+      <span><b>Capture</b> <span id="statusCapture">off</span></span>
+    </footer>
+  </div>
+
+  <dialog id="aboutDialog" class="dialog-card">
+    <form method="dialog">
+      <div class="dialog-header"><div><span class="eyebrow">ABOUT</span><h2>MAYHEM RTL v__APP_VERSION__</h2></div><button class="icon-button" value="close" aria-label="Close">×</button></div>
+      <p>A browser-native, local-first, receive-only port foundation derived from <code>mayhem-b200</code>.</p>
+      <div class="notice-box"><strong>Independent browser port</strong><p>This is not an official Mayhem, PortaPack, HackRF, RTL-SDR Blog, or Ettus Research release.</p></div>
+      <dl class="about-grid">
+        <div><dt>Upstream commit</dt><dd><code>44736b9ca844732e18f35e86eb5beece1d9c2c57</code></dd></div>
+        <div><dt>WebUSB reference</dt><dd><code>webrtlsdr 3.0.6 / 5699cec2</code></dd></div>
+        <div><dt>License</dt><dd>GNU General Public License 2.0 or later</dd></div>
+        <div><dt>Network behavior</dt><dd>No application-generated outbound connections after static assets load</dd></div>
+      </dl>
+      <div class="dialog-actions"><button class="primary-button" value="close">Close</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="messageDialog" class="dialog-card" aria-labelledby="messageTitle">
+    <form method="dialog">
+      <div class="dialog-header"><div><span id="messageEyebrow" class="eyebrow">STATUS</span><h2 id="messageTitle">Message</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+      <div id="messageBody"></div>
+      <details id="messageDetails" class="technical-details"><summary>Technical details</summary><pre id="messageTechnical"></pre></details>
+      <div id="messageActions" class="dialog-actions"><button class="primary-button" value="cancel">Close</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="biasTeeDialog" class="dialog-card warning-dialog">
+    <form method="dialog">
+      <div class="dialog-header"><div><span class="eyebrow">HARDWARE POWER</span><h2>Enable bias tee?</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+      <div class="notice-box warning"><strong>External power will be placed on the antenna connector.</strong><p>Enable this only for a receiver and accessory explicitly designed for bias-tee power. Incorrect use can damage equipment. The setting is disabled during disconnect where possible.</p></div>
+      <label class="check-row"><input id="biasAcknowledge" type="checkbox"> I have verified the connected hardware and attached accessory are compatible.</label>
+      <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancel</button><button id="biasEnableConfirm" class="danger-button" value="enable" disabled>Enable bias tee</button></div>
+    </form>
+  </dialog>
+
+  <input id="projectImportInput" type="file" accept="application/json,.json" hidden>
+  <input id="replayFileInput" type="file" accept=".cu8,.iq,.bin,application/octet-stream" hidden>
+  <input id="replayMetadataInput" type="file" accept="application/json,.json" hidden>
+  <script type="module" src="./src/app.js"></script>
+</body>
+</html>

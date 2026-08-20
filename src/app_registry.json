@@ -1,0 +1,304 @@
+[
+  {
+    "id": "spectrum",
+    "coreName": "Spectrum",
+    "name": "Spectrum Analyzer",
+    "icon": "∿",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 0,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "hardware-tested",
+    "limitations": [
+      "Reference RTL2838UHIDIR configuration is hardware-validated through 2.4 Msps; wider tuner/browser coverage remains pending."
+    ]
+  },
+  {
+    "id": "waterfall",
+    "coreName": "Waterfall",
+    "name": "Waterfall",
+    "icon": "≋",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 0,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "hardware-tested",
+    "limitations": [
+      "Reference RTL2838UHIDIR configuration is hardware-validated through 2.4 Msps; wider tuner/browser coverage remains pending."
+    ]
+  },
+  {
+    "id": "wfm",
+    "coreName": "WFM",
+    "name": "Wideband Frequency Modulation Receiver",
+    "icon": "W",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 1024000,
+    "requiredBandwidthHz": 200000,
+    "requiresAudio": true,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "hardware-tested",
+    "limitations": [
+      "On-air audio is user-verified on the reference RTL2838UHIDIR configuration; wider tuner/browser coverage remains pending."
+    ]
+  },
+  {
+    "id": "nfm",
+    "coreName": "NFM",
+    "name": "Narrowband Frequency Modulation Receiver",
+    "icon": "N",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 12500,
+    "requiresAudio": true,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "hardware-tested",
+    "limitations": [
+      "On-air audio is user-verified on the reference RTL2838UHIDIR configuration; wider tuner/browser coverage remains pending."
+    ]
+  },
+  {
+    "id": "am",
+    "coreName": "AM",
+    "name": "Amplitude Modulation Receiver",
+    "icon": "A",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 10000,
+    "requiresAudio": true,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "hardware-tested",
+    "limitations": [
+      "On-air audio is user-verified on the reference RTL2838UHIDIR configuration; wider tuner/browser coverage remains pending."
+    ]
+  },
+  {
+    "id": "scanner",
+    "coreName": "Scanner",
+    "name": "Frequency Scanner",
+    "icon": "⇥",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 225001,
+    "requiredBandwidthHz": 0,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "browser port pending",
+    "verificationState": "not tested",
+    "limitations": [
+      "Serialized scan controller pending."
+    ]
+  },
+  {
+    "id": "capture",
+    "coreName": "Capture",
+    "name": "Raw In-phase and Quadrature Capture",
+    "icon": "●",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 1,
+    "requiredBandwidthHz": 0,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "simulation-tested",
+    "limitations": [
+      "Origin Private File System preferred; Indexed Database fallback used when unavailable."
+    ]
+  },
+  {
+    "id": "replay",
+    "coreName": "Replay",
+    "name": "Raw In-phase and Quadrature Replay",
+    "icon": "▶",
+    "category": "Utilities",
+    "requiresReceive": false,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 1,
+    "requiredBandwidthHz": 0,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "partial",
+    "verificationState": "replay-tested",
+    "limitations": [
+      "Real-time and faster-than-real-time block replay; decoder-aware pacing pending."
+    ]
+  },
+  {
+    "id": "adsbrx",
+    "coreName": "ADS-B",
+    "name": "Automatic Dependent Surveillance–Broadcast Receiver",
+    "icon": "✈",
+    "category": "Receive",
+    "requiresReceive": true,
+    "requiresTransmit": false,
+    "preferredSampleRate": 2400000,
+    "minimumSampleRate": 2000000,
+    "requiredBandwidthHz": 2000000,
+    "requiresAudio": false,
+    "requiresMap": true,
+    "portState": "browser port pending",
+    "verificationState": "not tested",
+    "limitations": [
+      "Decoder and local graticule panel pending; no aircraft data leaves the browser."
+    ]
+  },
+  {
+    "id": "diagnostics",
+    "coreName": "Diagnostics",
+    "name": "Device Diagnostics",
+    "icon": "⌕",
+    "category": "Utilities",
+    "requiresReceive": false,
+    "requiresTransmit": false,
+    "preferredSampleRate": 0,
+    "minimumSampleRate": 0,
+    "requiredBandwidthHz": 0,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "unit-tested",
+    "limitations": []
+  },
+  {
+    "id": "radiosetup",
+    "coreName": "Radio Setup",
+    "name": "Radio Setup",
+    "icon": "⚙",
+    "category": "Settings",
+    "requiresReceive": false,
+    "requiresTransmit": false,
+    "preferredSampleRate": 0,
+    "minimumSampleRate": 0,
+    "requiredBandwidthHz": 0,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "partial",
+    "verificationState": "unit-tested",
+    "limitations": [
+      "Hardware-specific controls remain hidden until capability and hardware verification are available."
+    ]
+  },
+  {
+    "id": "compatibility",
+    "coreName": "Compatibility",
+    "name": "Application Compatibility Matrix",
+    "icon": "≡",
+    "category": "Utilities",
+    "requiresReceive": false,
+    "requiresTransmit": false,
+    "preferredSampleRate": 0,
+    "minimumSampleRate": 0,
+    "requiredBandwidthHz": 0,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "unit-tested",
+    "limitations": []
+  },
+  {
+    "id": "about",
+    "coreName": "About",
+    "name": "About and Licenses",
+    "icon": "i",
+    "category": "Settings",
+    "requiresReceive": false,
+    "requiresTransmit": false,
+    "preferredSampleRate": 0,
+    "minimumSampleRate": 0,
+    "requiredBandwidthHz": 0,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "unit-tested",
+    "limitations": []
+  },
+  {
+    "id": "simulation",
+    "coreName": "Simulation",
+    "name": "Simulation Mode",
+    "icon": "S",
+    "category": "Utilities",
+    "requiresReceive": false,
+    "requiresTransmit": false,
+    "preferredSampleRate": 1024000,
+    "minimumSampleRate": 1,
+    "requiredBandwidthHz": 0,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "ready",
+    "verificationState": "simulation-tested",
+    "limitations": [
+      "Always displays SIMULATION — NO LIVE RADIO."
+    ]
+  },
+  {
+    "id": "jammer",
+    "coreName": "Jammer",
+    "name": "Jammer",
+    "icon": "!",
+    "category": "Transmit",
+    "requiresReceive": false,
+    "requiresTransmit": true,
+    "preferredSampleRate": 0,
+    "minimumSampleRate": 0,
+    "requiredBandwidthHz": 0,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "transmit-only",
+    "verificationState": "not tested",
+    "limitations": [
+      "This application requires radio transmission.",
+      "The connected RTL-SDR is receive-only.",
+      "No transmit operation is available in this browser build."
+    ]
+  },
+  {
+    "id": "replaytx",
+    "coreName": "Replay TX",
+    "name": "Replay over Radio",
+    "icon": "↥",
+    "category": "Transmit",
+    "requiresReceive": false,
+    "requiresTransmit": true,
+    "preferredSampleRate": 0,
+    "minimumSampleRate": 0,
+    "requiredBandwidthHz": 0,
+    "requiresAudio": false,
+    "requiresMap": false,
+    "portState": "transmit-only",
+    "verificationState": "not tested",
+    "limitations": [
+      "This application requires radio transmission.",
+      "The connected RTL-SDR is receive-only.",
+      "No transmit operation is available in this browser build."
+    ]
+  }
+]

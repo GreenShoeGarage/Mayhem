@@ -1,0 +1,106 @@
+{
+  "viewports": {
+    "wide": {
+      "viewport": [
+        1600,
+        1000
+      ],
+      "appLeft": "true",
+      "appRight": "true",
+      "workspace": [
+        1069,
+        1069
+      ],
+      "document": [
+        1600,
+        1600
+      ],
+      "navTransform": "none",
+      "navVisibility": "visible",
+      "rightVisibility": "visible",
+      "top": [
+        1600,
+        1600
+      ],
+      "metricColumns": "111.375px 111.375px 111.375px 111.375px"
+    },
+    "compact": {
+      "viewport": [
+        1024,
+        768
+      ],
+      "appLeft": "true",
+      "appRight": "true",
+      "workspace": [
+        545,
+        545
+      ],
+      "document": [
+        1024,
+        1024
+      ],
+      "navTransform": "none",
+      "navVisibility": "visible",
+      "rightVisibility": "visible",
+      "top": [
+        1024,
+        1024
+      ],
+      "metricColumns": "101.75px 101.75px"
+    },
+    "tablet": {
+      "viewport": [
+        820,
+        900
+      ],
+      "appLeft": "true",
+      "appRight": "true",
+      "workspace": [
+        747,
+        747
+      ],
+      "document": [
+        820,
+        821
+      ],
+      "navTransform": "none",
+      "navVisibility": "visible",
+      "rightVisibility": "hidden",
+      "top": [
+        820,
+        820
+      ],
+      "metricColumns": "152.25px 152.25px"
+    },
+    "mobile": {
+      "viewport": [
+        391,
+        847
+      ],
+      "appLeft": "false",
+      "appRight": "false",
+      "workspace": [
+        390,
+        390
+      ],
+      "document": [
+        390,
+        391
+      ],
+      "navTransform": "matrix(1, 0, 0, 1, -275.4, 0)",
+      "navVisibility": "visible",
+      "rightVisibility": "hidden",
+      "top": [
+        390,
+        390
+      ],
+      "metricColumns": "334px",
+      "afterMenuOpen": {
+        "appLeft": "true",
+        "transform": "matrix(1, 0, 0, 1, 0, 0)"
+      },
+      "afterNavigation": "false"
+    }
+  },
+  "warnings": []
+}

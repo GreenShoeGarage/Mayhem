@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="MAYHEM RTL">
+  <rect width="512" height="512" rx="92" fill="#111713"/>
+  <path d="M72 350V156h66l58 92 58-92h66v194h-58V244l-66 100-66-100v106z" fill="#d7ff3f"/>
+  <path d="M350 156h90v52h-90zm0 72h90v122h-90z" fill="#f4f7ef"/>
+</svg>

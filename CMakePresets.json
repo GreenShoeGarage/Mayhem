@@ -1,0 +1,32 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "native-tests",
+      "displayName": "Native contract tests",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/native",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "MB200_WEB": "OFF"
+      }
+    },
+    {
+      "name": "web",
+      "displayName": "Emscripten browser target",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/web",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "MB200_WEB": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "native-tests", "configurePreset": "native-tests" },
+    { "name": "web", "configurePreset": "web" }
+  ],
+  "testPresets": [
+    { "name": "native-tests", "configurePreset": "native-tests", "output": { "outputOnFailure": true } }
+  ]
+}

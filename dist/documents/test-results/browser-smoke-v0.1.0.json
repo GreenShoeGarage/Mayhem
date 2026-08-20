@@ -1,0 +1,92 @@
+{
+  "home": {
+    "heading": "Start with a source",
+    "workerLabel": "WebAssembly development build",
+    "metricValues": [
+      {
+        "label": "Upstream",
+        "value": "44736b9c",
+        "scrollWidth": 109,
+        "clientWidth": 109
+      },
+      {
+        "label": "Transport reference",
+        "value": "5699cec2",
+        "scrollWidth": 109,
+        "clientWidth": 109
+      },
+      {
+        "label": "Network",
+        "value": "local only",
+        "scrollWidth": 109,
+        "clientWidth": 109
+      },
+      {
+        "label": "Transmit",
+        "value": "unavailable",
+        "scrollWidth": 109,
+        "clientWidth": 109
+      }
+    ],
+    "workspace": {
+      "scrollWidth": 1069,
+      "clientWidth": 1069,
+      "scrollHeight": 929,
+      "clientHeight": 896
+    },
+    "preflightRows": 10
+  },
+  "simulation": {
+    "banner": "SIMULATION \u2014 NO LIVE RADIO",
+    "device": "Simulation",
+    "receive": "Receiver active",
+    "level": "-4.4 dBFS",
+    "drops": "0",
+    "startDisabled": true,
+    "stopDisabled": false,
+    "workspace": {
+      "scrollWidth": 1069,
+      "clientWidth": 1069
+    }
+  },
+  "captureStarted": {
+    "buttonText": "Stop Capture",
+    "status": "2.56 MiB \u00b7 1 queued"
+  },
+  "captureDialog": {
+    "open": true,
+    "title": "simulation-100.000 MHz",
+    "body": "2.69 MiB of raw samples were committed with 0 reported dropped samples."
+  },
+  "captureLibrary": {
+    "rows": 1,
+    "firstRow": "simulation-100.000 MHzsimulationAug 20, 2026, 2:35:38 AM2.69 MiB0:010completeIQ Metadata Replay Delete"
+  },
+  "replayLoaded": {
+    "file": "simulation-100.000-MHz.cu8",
+    "definition": "Filesimulation-100.000-MHz.cu8Size2.69 MiBSample rate1.024 MspsCenter frequency100.000 MHzFormatunsigned 8-bit interleaved In-phase and QuadratureRecordedAug 20, 2026, 2:35:38 AM"
+  },
+  "replayRunning": {
+    "banner": "REPLAY \u2014 LOCAL CAPTURE, NO LIVE RADIO",
+    "receive": "Receiver active",
+    "device": "simulation-100.000-MHz.cu8"
+  },
+  "applications": {
+    "cards": 16,
+    "transmit": 2,
+    "locked": 2
+  },
+  "diagnostics": {
+    "cards": 4
+  },
+  "offline": {
+    "serviceWorkerReady": true,
+    "controlledAfterReload": true,
+    "heading": "Start with a source",
+    "workerLabel": "WebAssembly development build"
+  },
+  "jsExceptions": 0,
+  "logErrors": 0,
+  "logErrorDetails": [],
+  "externalRequests": []
+}
